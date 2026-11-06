@@ -4,3 +4,6 @@ __pycache__/
 .DS_Store
 .tmp/
 testdata/
+
+# 本机测试残留
+w611zkz6
