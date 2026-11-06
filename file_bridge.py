@@ -16,7 +16,7 @@ from pathlib import Path
 from PySide6.QtCore import QObject, Property, QTimer, Qt, Signal, Slot
 
 import filecore
-from filecore import listing, state, vpath
+from filecore import listing, locations, state, vpath
 from filecore.entries import kind_label
 from filecore.sources import UnknownScheme, capabilities_of, resolve
 from filecore.sources.local import LocalSource
@@ -302,18 +302,8 @@ class FilePanel(QObject):
         """键盘上下移动时，QML 用行号换回 vpath（模型在 Python 侧）。"""
         return self._model.vpath_at(int(row))
 
-    @Slot(result="QVariantList")
-    def locations(self):
-        """常用位置（方案 B 未采纳，接口先留着，QML 本步不显示）。"""
-        candidates = [
-            ("主目录", HOME),
-            ("桌面", os.path.join(HOME, "Desktop")),
-            ("文档", os.path.join(HOME, "Documents")),
-            ("下载", os.path.join(HOME, "Downloads")),
-            ("图片", os.path.join(HOME, "Pictures")),
-        ]
-        return [{"name": name, "vpath": vpath.encode_path(path)}
-                for name, path in candidates if os.path.isdir(path)]
+    # 常用位置已上移到 FileManagerBackend.standardLocations() -> filecore/locations.py
+    # （收藏栏是页面级的，不该左右面板各算一份）。
 
     # ---------------- 内部：扫描与视图 ----------------
     def apply_initial(self, cwd_value, data):
@@ -463,6 +453,7 @@ class FileManagerBackend(QObject):
     busyChanged = Signal()
     progressChanged = Signal()
     toast = Signal(str)
+    favoritesChanged = Signal()
 
     def __init__(self, app_home, parent=None):
         super().__init__(parent)
@@ -474,6 +465,8 @@ class FileManagerBackend(QObject):
         self._preview = PreviewProvider(self)
         self._active_side = "left"
         self._left_width = state.DEFAULT_LEFT_WIDTH
+        self._favorites: list[str] = []          # 存 vpath，不是绝对路径
+        self._local_source = LocalSource()
         self._busy = False
         self._progress = 0
 
@@ -516,7 +509,27 @@ class FileManagerBackend(QObject):
 
     @Property(int, notify=leftWidthChanged)
     def leftWidth(self):
+        # 966 基准下的归一化像素（比例 = leftWidth / 966），不是屏幕像素。
+        # QML 用 FileManagerPage.ratio 换算成实际宽度，窗口任何尺寸下比例恒定。
         return self._left_width
+
+    @Property("QVariantList", notify=favoritesChanged)
+    def favorites(self):
+        """收藏夹。QML 严禁直接 model: files.favorites，
+        必须 property var + Connections 整体重新赋值（PySide6 的已知坑）。"""
+        out = []
+        for v in self._favorites:
+            try:
+                local = vpath.to_local(v)
+                name = os.path.basename(local.rstrip("/")) or "/"
+                disp = vpath.display(v)
+                missing = not self._local_source.is_dir(v)
+            except (ValueError, OSError, TypeError):
+                # M2 之前遇到 zip+file:// 等未知方案，保守判为失效
+                name, disp, missing = v, v, True
+            out.append({"vpath": v, "name": name, "display": disp,
+                        "missing": bool(missing)})
+        return out
 
     @Property(bool, notify=busyChanged)
     def busy(self):
@@ -541,6 +554,44 @@ class FileManagerBackend(QObject):
     @Slot(result=QObject)
     def active(self):
         return self._panels[self._active_side]
+
+    # ---------------- Slots：收藏栏 ----------------
+    @Slot(result="QVariantList")
+    def standardLocations(self):
+        """常用位置（只读分组，页面级一份）。Linux 走 XDG user-dirs.dirs。"""
+        return locations.standard_locations(HOME)
+
+    @Slot()
+    def addFavorite(self):
+        """把当前激活面板所在的目录加入收藏夹（无参，避开 QML 传值时机问题）。"""
+        try:
+            n = vpath.normalize(self.active().cwd)
+        except (ValueError, TypeError, OSError):
+            n = ""
+        if not n or n in self._favorites:
+            self.toast.emit("目录无效或已在收藏夹里")
+            return
+        if not self._local_source.is_dir(n):
+            self.toast.emit("只能收藏本地文件夹")
+            return
+        self._favorites.append(n)
+        self.favoritesChanged.emit()
+        self.toast.emit("已收藏：" + vpath.display(n))
+        self._schedule_save()
+
+    @Slot(str)
+    def removeFavorite(self, vp):
+        try:
+            n = vpath.normalize(vp) if isinstance(vp, str) else ""
+        except (ValueError, TypeError, OSError):
+            n = ""
+        if not n or n not in self._favorites:
+            self.toast.emit("收藏项不存在")
+            return
+        self._favorites.remove(n)
+        self.favoritesChanged.emit()
+        self.toast.emit("已移除收藏：" + vpath.display(n))
+        self._schedule_save()
 
     @Slot(int)
     def setLeftWidth(self, width):
@@ -573,6 +624,7 @@ class FileManagerBackend(QObject):
             "version": state.VERSION,
             "activeSide": self._active_side,
             "leftWidth": self._left_width,
+            "favorites": list(self._favorites),
             "panels": panels,
         })
 
@@ -581,13 +633,14 @@ class FileManagerBackend(QObject):
         data = state.load(self._state_path, HOME)
         self._active_side = data.get("activeSide", "left")
         self._left_width = state.clamp_width(data.get("leftWidth"))
-        local = LocalSource()
+        self._favorites = list(data.get("favorites", []))
         for side in ("left", "right"):
             cfg = data["panels"][side]
-            cwd_value = state.validate(cfg["cwd"], HOME, local)
+            cwd_value = state.validate(cfg["cwd"], HOME, self._local_source)
             self._panels[side].apply_initial(cwd_value, cfg)
         self.activeSideChanged.emit()
         self.leftWidthChanged.emit()
+        self.favoritesChanged.emit()      # 保险：QML 若已挂载，同步一次收藏列表
 
     def _schedule_save(self):
         self._save_timer.start()

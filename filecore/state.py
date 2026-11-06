@@ -13,12 +13,52 @@ from pathlib import Path
 
 from . import vpath
 
+# VERSION 绝不能 bump：load() 遇版本不符直接返回默认值，
+# 会把用户现有的 cwd / history / 收藏 / 面板比例全部清空。
 VERSION = 1
-DEFAULT_LEFT_WIDTH = 483
-MIN_PANEL_WIDTH = 320
-DEFAULT_TOTAL_WIDTH = 986
+DEFAULT_LEFT_WIDTH = 483          # 483 / 966 = 0.5
+DEFAULT_TOTAL_WIDTH = 986         # 默认窗口 1240 反推，仅用于推导基准
+BASE_WIDTH = 966                  # 986 - 20(拖拽手柄)：leftWidth 的归一化基准
+MIN_RATIO = 0.30                  # 与 PANEL_MIN_WIDTH 联动，改动需重跑四档几何探针
+WIDTH_LOW = 290                   # round(966 * 0.30)
+WIDTH_HIGH = 676                  # 966 - 290，对称上限
+PANEL_MIN_WIDTH = 180             # QML Layout.minimumWidth 的配套值
 
 _PANEL_KEYS = ("cwd", "sortColumn", "sortDesc", "showHidden", "history", "histPos")
+
+
+def _clean_favorites(raw) -> list[str]:
+    """收藏项逐项回退：只收合法 vpath 字符串、去重、拒绝未知 scheme。
+
+    僵尸路径（目录暂时不存在）**保留**，不静默删用户数据；渲染时灰显即可。
+    vpath.normalize 会把未知 scheme 静默拼成本地相对路径，必须先挡住。
+    """
+    if not isinstance(raw, list):
+        return []
+    out: list[str] = []
+    seen: set[str] = set()
+    for item in raw:
+        if not isinstance(item, str) or not item.strip():
+            continue
+        try:
+            raw = item.strip()
+            # 必须先校验原始 scheme：normalize() 会把未知 scheme 静默拼成
+            # 本地相对路径（如 bogus://x -> file:///$PWD/x），之后再查就全是 file 了。
+            if vpath.parse(raw)[0] not in (vpath.LOCAL, vpath.ARCHIVE):
+                continue
+            n = vpath.normalize(raw)
+            scheme = vpath.parse(n)[0]
+        except (ValueError, TypeError, OSError):
+            continue
+        if not n or scheme not in (vpath.LOCAL, vpath.ARCHIVE):
+            continue
+        if n in seen:
+            continue
+        seen.add(n)
+        out.append(n)
+        if len(out) >= 100:
+            break
+    return out
 
 
 def default_state(home: str) -> dict:
@@ -35,17 +75,23 @@ def default_state(home: str) -> dict:
         "version": VERSION,
         "activeSide": "left",
         "leftWidth": DEFAULT_LEFT_WIDTH,
+        "favorites": [],
         "panels": {"left": dict(panel), "right": dict(panel)},
     }
 
 
 def clamp_width(w, total: int = DEFAULT_TOTAL_WIDTH) -> int:
+    """leftWidth 是 966 基准下的归一化像素，不是屏幕像素。
+
+    旧实现按 986 总宽钳在 [320, 666]，导致窗口最大化后拖拽手柄拖不动。
+    改为对称比例边界 [290, 676]（约 0.30 ~ 0.70），与窗口宽度无关。
+    total 形参保留只为兼容旧调用，不再使用。
+    """
     try:
         value = int(w)
     except (TypeError, ValueError):
         return DEFAULT_LEFT_WIDTH
-    high = max(MIN_PANEL_WIDTH, total - MIN_PANEL_WIDTH)
-    return max(MIN_PANEL_WIDTH, min(high, value))
+    return max(WIDTH_LOW, min(WIDTH_HIGH, value))
 
 
 def load(path, home: str) -> dict:
@@ -63,6 +109,7 @@ def load(path, home: str) -> dict:
     if data.get("activeSide") in ("left", "right"):
         out["activeSide"] = data["activeSide"]
     out["leftWidth"] = clamp_width(data.get("leftWidth", DEFAULT_LEFT_WIDTH))
+    out["favorites"] = _clean_favorites(data.get("favorites"))
 
     panels = data.get("panels")
     if not isinstance(panels, dict):

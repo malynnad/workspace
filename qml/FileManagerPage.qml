@@ -1,12 +1,36 @@
 import QtQuick
 import QtQuick.Layouts
 
-// 阶段 2 · M1a：双面板浏览页。
-// 986 = 483 + 20(拖拽手柄) + 483；底部两条槽位留给第 4 步写操作与第 5 步插件命令，
-// 本轮由 capabilities 门控隐藏，后续只翻能力位，不重排布局。
+// 阶段 2 · M1a：常驻收藏栏 + 等比双面板浏览页。
+//
+// 布局推导（wPage 里的 214 来自 Main.qml:23 全局侧栏宽、40 来自 Theme.pad × 2，
+// 改这两处必须同步改下面的表达式）：
+//   wPage   = Window.window.width - 214 - 40        默认 1240 -> 986
+//   rAvail  = wPage - favW(收藏栏) - gapW(12) - splitW(20)
+//   leftW   = round(ratio * rAvail)，rightW = rAvail - leftW
+//   ratio   = files.leftWidth / 966（966 = 986 - 20，与窗口无关的比例）
+// 旧版把左栏钉成固定 483、右栏 fillWidth 吃剩余，导致窗口 ≠1240 时必然不等宽。
+// 底部两条槽位留给第 4 步写操作与第 5 步插件命令，本轮由 capabilities 门控隐藏。
 Item {
     id: root
     objectName: "fileManagerPage"
+
+    // 唯一绑定源 = 上层 Window 的 width（切页不改变窗口宽度，故切页不会闪）。
+    // 严禁绑 root.width / RowLayout 自身尺寸，也不在 onWidthChanged 里命令式回写
+    // setLeftWidth —— 那会形成绑定循环、污染持久化状态并与拖拽打架。
+    // QML 属性名不能以大写字母开头（qmllint 直接判错）。
+    readonly property real wPage: (Window.window ? Window.window.width : 1240) - 214 - 40
+    readonly property int favW: wPage < 900 ? 132 : 168
+    readonly property int gapW: 12
+    readonly property int splitW: Theme.pad
+    readonly property real rAvail: wPage - favW - gapW - splitW
+    readonly property int baseW: 966
+    readonly property real ratio: Math.max(290 / 966, Math.min(676 / 966, files.leftWidth / 966))
+    readonly property int leftW: Math.round(ratio * rAvail)
+    readonly property int panelMin: 180
+    // 不用 files.active().cwd：Slot 调用不产生绑定依赖，Tab 切换后高亮不会重算。
+    readonly property string activeVpath:
+        files.activeSide === "left" ? files.left.cwd : files.right.cwd
 
     readonly property bool pageActive: StackLayout.isCurrentItem
     readonly property bool shortcutOk: root.pageActive &&
@@ -22,9 +46,18 @@ Item {
         spacing: 0
 
         RowLayout {
+            objectName: "fmRow"
             Layout.fillWidth: true
             Layout.fillHeight: true
             spacing: 0
+
+            FavoritesBar {
+                id: favoritesBar
+                activeVpath: root.activeVpath
+                Layout.preferredWidth: root.favW
+                Layout.rightMargin: root.gapW
+                Layout.fillHeight: true
+            }
 
             FmPanel {
                 id: leftPanel
@@ -32,15 +65,16 @@ Item {
                 panel: files.left
                 side: "left"
                 active: files.activeSide === "left"
-                Layout.preferredWidth: files.leftWidth
-                Layout.minimumWidth: 320
+                Layout.preferredWidth: root.leftW
+                Layout.minimumWidth: root.panelMin
                 Layout.fillHeight: true
                 onActivated: files.setActiveSide("left")
             }
 
             Item {
                 id: splitter
-                Layout.preferredWidth: Theme.pad
+                objectName: "fmSplitter"
+                Layout.preferredWidth: root.splitW
                 Layout.fillHeight: true
 
                 Rectangle {
@@ -60,7 +94,10 @@ Item {
                         startW = files.leftWidth
                     }
                     onPositionChanged: function(mouse) {
-                        if (pressed) files.setLeftWidth(startW + Math.round(mouse.x - startX))
+                        // 屏幕位移换算回 966 基准：任何窗口宽度下手柄都 1:1 跟手。
+                        if (pressed)
+                            files.setLeftWidth(startW +
+                                Math.round(root.baseW * (mouse.x - startX) / root.rAvail))
                     }
                 }
             }
@@ -71,8 +108,8 @@ Item {
                 panel: files.right
                 side: "right"
                 active: files.activeSide === "right"
-                Layout.fillWidth: true
-                Layout.minimumWidth: 320
+                Layout.fillWidth: true              // 唯一 fillWidth 子项，吸收剩余宽度
+                Layout.minimumWidth: root.panelMin
                 Layout.fillHeight: true
                 onActivated: files.setActiveSide("right")
             }
@@ -116,7 +153,14 @@ Item {
         }
     }
 
+    // 后端 toast 的页面级单点监听（FmPanel.qml 里两份已移除，避免一次 emit 弹两遍）
+    Connections {
+        target: files
+        function onToast(msg) { Toast.show(msg) }
+    }
+
     // ---------------- 全局快捷键（只在当前页且输入框未聚焦时生效） ----------------
+    // 预留 Ctrl+D「收藏当前目录」，与现有 9 个快捷键不冲突，M1b 再启用。
     Shortcut {
         sequence: "F5"
         enabled: root.shortcutOk

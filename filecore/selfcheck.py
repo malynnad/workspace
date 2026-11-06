@@ -230,6 +230,87 @@ def _state():
         shutil.rmtree(home, ignore_errors=True)
 
 
+def _layout_ratio():
+    """等比布局的纯数值契约，与 qml/FileManagerPage.qml / FmPanel.qml 一一对应。
+
+    qmllint 查不出「两栏不等宽」「列头溢出」这类运行时几何问题，
+    所以把公式在这里钉死；QML 侧另用 offscreen 探针实测四档窗口宽度。
+    """
+    base = state.BASE_WIDTH
+    lo, hi = state.WIDTH_LOW, state.WIDTH_HIGH
+    assert base == 966 and lo == 290 and hi == 676
+    assert state.clamp_width(0) == lo and state.clamp_width(9999) == hi
+    assert state.DEFAULT_LEFT_WIDTH / base == 0.5
+
+    # (窗口宽, 收藏栏宽, 面板宽, 显示类型列, 显示时间列, 名称列宽)
+    cases = ((1040, 132, 311, False, False, 215),
+             (1240, 168, 393, False, True, 197),
+             (1440, 168, 493, True, True, 233),
+             (1920, 168, 733, True, True, 473))
+    for win, fav_w, panel_w, show_kind, show_time, name_w in cases:
+        w_page = win - 214 - 40
+        assert w_page == win - 254
+        assert (132 if w_page < 900 else 168) == fav_w
+        r_avail = w_page - fav_w - 12 - 20
+        ratio = max(lo / base, min(hi / base, state.DEFAULT_LEFT_WIDTH / base))
+        lw = round(ratio * r_avail)
+        assert lw == r_avail - lw, (win, lw, r_avail - lw)   # 严格等宽
+        assert lw == panel_w, (win, lw, panel_w)
+        # 拖到比例两端时，较窄的一栏仍不能小于 QML 的 minimumWidth
+        for raw in (lo, hi):
+            rr = max(lo / base, min(hi / base, raw / base))
+            a = round(rr * r_avail)
+            assert min(a, r_avail - a) >= state.PANEL_MIN_WIDTH, (win, raw, a)
+        # 列宽：名称列吃掉剩余宽度，隐藏的类型/时间信息仍在选中项信息条
+        content = panel_w - 2 * 14
+        visible = 2 + int(show_kind) + int(show_time)
+        reserved = 64 + (60 if show_kind else 0) + (96 if show_time else 0) \
+                   + 4 * (visible - 1)
+        assert max(80, content - reserved) == name_w, (win, content, reserved)
+
+
+def _favorites_state():
+    """收藏项往返 / 旧配置兼容 / 僵尸路径保留 / 坏值丢弃。"""
+    from . import locations
+    home = tempfile.mkdtemp(prefix="fc_selfcheck_fav_")
+    try:
+        cfg = os.path.join(home, "filemanager_state.json")
+        home_vp = vpath.encode_path(home)
+        chinese = vpath.encode_path(os.path.join(home, "小说 集"))
+        zombie = "file:///no/such/zombie/dir"
+
+        data = state.default_state(home)
+        data["leftWidth"] = 575
+        data["favorites"] = [home_vp, chinese, chinese, zombie,
+                             "bogus://x", 123, None, ""]
+        assert state.save(cfg, data) is True
+        loaded = state.load(cfg, home)
+        assert loaded["version"] == 1
+        assert loaded["leftWidth"] == 575
+        assert loaded["favorites"][0] == home_vp
+        assert loaded["favorites"].count(chinese) == 1, loaded["favorites"]
+        assert zombie in loaded["favorites"], "僵尸项不能静默删"
+        assert len(loaded["favorites"]) == 3, loaded["favorites"]
+        assert not os.path.exists(cfg + ".tmp"), "原子写不应留 .tmp"
+
+        # 旧配置（没有 favorites 字段）必须照常读出 cwd / 宽度
+        old = state.default_state(home)
+        old.pop("favorites")
+        assert state.save(cfg, old) is True
+        back = state.load(cfg, home)
+        assert back["favorites"] == [] and back["leftWidth"] == old["leftWidth"]
+
+        # 常用位置：结构固定、路径真实存在
+        items = locations.standard_locations(os.path.expanduser("~"))
+        assert items and items[0]["name"] == "主目录"
+        for it in items:
+            assert set(it) == {"name", "vpath"}
+            assert it["vpath"].startswith("file://")
+            assert os.path.isdir(vpath.to_local(it["vpath"]))
+    finally:
+        shutil.rmtree(home, ignore_errors=True)
+
+
 def _registry_and_preview():
     from .sources import UnknownScheme, resolve
     bootstrap()
@@ -266,6 +347,8 @@ def main() -> int:
         ("scan_dir 批量项 / 隐藏 / 断链 / 取消", _scan_dir),
         ("scan_dir 错误文案不抛异常", _scan_errors),
         ("state 读写 / 坏 JSON / 版本 / 路径回退", _state),
+        ("等比布局数值 / 四档列宽契约", _layout_ratio),
+        ("收藏项往返 / 旧配置兼容 / 常用位置", _favorites_state),
         ("FileSource 注册表 / 预览器空注册", _registry_and_preview),
         ("零 Qt 依赖", _zero_qt),
     ]:

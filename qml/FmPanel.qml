@@ -2,7 +2,7 @@ import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
 
-// 单面板：两行工具栏 + 四列列头 + ListView + 信息条 + 状态栏 + 三态覆盖层。
+// 单面板：两行工具栏 + 响应式列头 + ListView + 信息条 + 状态栏 + 三态覆盖层。
 // 界面方案 A（Marta 式等宽双栏 + ForkLift 式顶部激活短横），浅色主题全部走 Theme.*。
 // 软渲染硬约束：delegate 内零 Layout / 零 Canvas / 零动画 / 零 Icon / 零 Check，
 // 固定行高 32，全部用绝对定位的 Rectangle + Text。
@@ -16,12 +16,48 @@ Item {
     property string currentVpath: ""
     signal activated()
 
-    readonly property int colName: 223
     readonly property int colSize: 64
     readonly property int colKind: 60
     readonly property int colTime: 96
     readonly property int colGap: 4
     readonly property int rowH: 32
+    readonly property int panelPad: 14       // Card 内 ColumnLayout anchors.margins
+    readonly property int minNameW: 80
+
+    // 面板变宽时名称列吃掉多余宽度（最大化下右侧不再留白）；
+    // 面板变窄时依次隐藏「类型」「修改时间」，信息仍在下方选中项信息条里。
+    readonly property int contentW: Math.max(0, Math.round(root.width - 2 * panelPad))
+    readonly property bool showKind: root.width >= 430
+    readonly property bool showTime: root.width >= 380
+
+    // 列头与数据行共用这一套列定义，绝不各算各的。
+    readonly property var cols: {
+        var a = [
+            { key: "name", label: "名称", sortCol: 0, w: 0 },
+            { key: "size", label: "大小", sortCol: 1, w: colSize }
+        ]
+        if (showKind) a.push({ key: "kind", label: "类型", sortCol: 2, w: colKind })
+        if (showTime) a.push({ key: "time", label: "修改时间", sortCol: 3, w: colTime })
+        var reserved = colSize + (showKind ? colKind : 0) + (showTime ? colTime : 0)
+                       + colGap * (a.length - 1)
+        a[0].w = Math.max(minNameW, contentW - reserved)
+        return a
+    }
+
+    function xOf(key) {
+        var x = 0
+        for (var i = 0; i < cols.length; ++i) {
+            if (cols[i].key === key) return x
+            x += cols[i].w + colGap
+        }
+        return 0
+    }
+
+    function wOf(key) {
+        for (var i = 0; i < cols.length; ++i)
+            if (cols[i].key === key) return cols[i].w
+        return 0
+    }
 
     function labelOf(kind) {
         switch (kind) {
@@ -205,7 +241,7 @@ Item {
                 Item { Layout.fillWidth: true }
             }
 
-            // ---------- 四列列头（固定像素，不用 grid.width / 列数） ----------
+            // ---------- 响应式列头（列宽从 root.cols 取，不用 grid.width / 列数） ----------
             Item {
                 Layout.fillWidth: true
                 Layout.preferredHeight: 26
@@ -215,31 +251,32 @@ Item {
                     anchors.fill: parent
                     spacing: root.colGap
                     Repeater {
-                        model: ["名称", "大小", "类型", "修改时间"]
+                        model: root.cols
                         delegate: Rectangle {
-                            width: index === 0 ? root.colName
-                                  : (index === 1 ? root.colSize
-                                  : (index === 2 ? root.colKind : root.colTime))
+                            id: headerCell
+                            readonly property bool isName: modelData.key === "name"
+                            readonly property bool sorted: root.panel &&
+                                root.panel.sortColumn === modelData.sortCol
+                            width: modelData.w
                             height: 26
                             color: "transparent"
                             Text {
                                 anchors.left: parent.left
-                                anchors.leftMargin: index === 0 ? 18 : 0
+                                anchors.leftMargin: headerCell.isName ? 18 : 0
                                 anchors.verticalCenter: parent.verticalCenter
-                                width: parent.width - (index === 0 ? 18 : 0) - 4
-                                text: modelData + ((root.panel && root.panel.sortColumn === index)
+                                width: parent.width - (headerCell.isName ? 18 : 0) - 4
+                                // 隐藏列后 index 不再等于排序列，必须用 sortCol 映射
+                                text: modelData.label + (headerCell.sorted
                                       ? (root.panel.sortDesc ? " ↓" : " ↑") : "")
                                 font.pixelSize: 11
-                                font.weight: (root.panel && root.panel.sortColumn === index)
-                                             ? Font.DemiBold : Font.Normal
-                                color: (root.panel && root.panel.sortColumn === index)
-                                       ? Theme.accent : Theme.textMuted
+                                font.weight: headerCell.sorted ? Font.DemiBold : Font.Normal
+                                color: headerCell.sorted ? Theme.accent : Theme.textMuted
                                 elide: Text.ElideRight
                             }
                             MouseArea {
                                 anchors.fill: parent
                                 cursorShape: Qt.PointingHandCursor
-                                onClicked: { root.activated(); root.panel.sortBy(index) }
+                                onClicked: { root.activated(); root.panel.sortBy(modelData.sortCol) }
                             }
                         }
                     }
@@ -277,7 +314,7 @@ Item {
                         }
                         Text {
                             x: 18; y: 0
-                            width: root.colName - 18
+                            width: Math.max(0, root.wOf("name") - 18)
                             height: root.rowH
                             verticalAlignment: Text.AlignVCenter
                             text: model.name
@@ -287,8 +324,8 @@ Item {
                             elide: Text.ElideRight
                         }
                         Text {
-                            x: root.colName + root.colGap; y: 0
-                            width: root.colSize; height: root.rowH
+                            x: root.xOf("size"); y: 0
+                            width: root.wOf("size"); height: root.rowH
                             verticalAlignment: Text.AlignVCenter
                             horizontalAlignment: Text.AlignRight
                             text: model.sizeText
@@ -297,8 +334,9 @@ Item {
                             elide: Text.ElideRight
                         }
                         Text {
-                            x: root.colName + root.colSize + root.colGap * 2; y: 0
-                            width: root.colKind; height: root.rowH
+                            x: root.xOf("kind"); y: 0
+                            width: root.wOf("kind"); height: root.rowH
+                            visible: root.showKind
                             verticalAlignment: Text.AlignVCenter
                             text: root.labelOf(model.kind)
                             font.pixelSize: 11
@@ -306,8 +344,9 @@ Item {
                             elide: Text.ElideRight
                         }
                         Text {
-                            x: root.colName + root.colSize + root.colKind + root.colGap * 3; y: 0
-                            width: root.colTime; height: root.rowH
+                            x: root.xOf("time"); y: 0
+                            width: root.wOf("time"); height: root.rowH
+                            visible: root.showTime
                             verticalAlignment: Text.AlignVCenter
                             text: model.timeText
                             font.pixelSize: 11
@@ -434,10 +473,16 @@ Item {
                 color: "transparent"
                 Rectangle { anchors.top: parent.top; width: parent.width; height: 1; color: Theme.line }
                 RowLayout {
+                    id: infoRow
+                    objectName: "fmInfoRow"
                     anchors.fill: parent
                     spacing: 8
+                    // 名称吃掉剩余宽度并在窄面板下自动收缩，后三列按内容定宽：
+                    // 这样整行永远排在卡片内，不会把「修改时间」挤出框外。
                     Text {
-                        Layout.preferredWidth: 116
+                        Layout.fillWidth: true
+                        Layout.minimumWidth: 72
+                        Layout.maximumWidth: 200
                         elide: Text.ElideRight
                         text: (root.panel && root.panel.info.name) ? root.panel.info.name : "未选中文件"
                         font.pixelSize: 12
@@ -455,14 +500,8 @@ Item {
                         text: (root.panel && root.panel.info.timeText) ? root.panel.info.timeText : ""
                         font.pixelSize: 11; color: Theme.textMuted
                     }
-                    Item { Layout.fillWidth: true }
-                    Text {
-                        Layout.preferredWidth: 120
-                        horizontalAlignment: Text.AlignRight
-                        elide: Text.ElideMiddle
-                        text: (root.panel && root.panel.info.display) ? root.panel.info.display : ""
-                        font.pixelSize: 10; color: Theme.textMuted
-                    }
+                    // 路径不再放在这里：上方地址栏已是完整路径，重复一份既占宽度，
+                    // 又会在窄面板下把整行撑出卡片。info.display 保留供 M1b 预览标题用。
                 }
             }
 
@@ -506,9 +545,6 @@ Item {
         target: root.panel
         function onCwdChanged() { addressField.text = root.panel.displayPath }
     }
-    Connections {
-        target: files
-        function onToast(msg) { Toast.show(msg) }
-    }
+    // toast 由 FileManagerPage.qml 页面级单点接住，两个面板实例不各弹一次。
     Component.onCompleted: addressField.text = root.panel.displayPath
 }

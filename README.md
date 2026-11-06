@@ -30,7 +30,7 @@ python3 -m venv .venv
 
 - 数据库：`~/.config/workspace/workspace.db`（阶段 1 schema：log_types / log_entries / todos / templates）
 - 脚本目录：`~/.config/workspace/scripts/`（已有示例 hello.py，扔 .py/.sh 进去就出现在面板）
-- 文件管理状态：`~/.config/workspace/filemanager_state.json`（cwd / 排序 / 隐藏开关 / 面板宽度，不动 workspace.db）
+- 文件管理状态：`~/.config/workspace/filemanager_state.json`（cwd / 排序 / 隐藏开关 / 面板比例 / 收藏夹，不动 workspace.db）。`leftWidth` 是 966 基准的归一化像素（比例 = leftWidth / 966），不是屏幕像素
 - 测试隔离跑：`WORKSPACE_HOME=./testdata .venv/bin/python main.py`
 
 ## 模块现状
@@ -43,7 +43,7 @@ python3 -m venv .venv
 | 日志→待办 | ✅ | 日志编辑器里「转为待办」按钮，content 取主题或正文首行 |
 | 脚本面板 | ✅ | 扫描 scripts 目录、QProcess 运行、输出回显、双击即跑 |
 | 模板回复 | 未做 | 表已建（templates），UI 阶段 1 后期加，可开关 |
-| 文件管理 | ✅ M1a | 双面板只读浏览：导航 / 四列排序 / 过滤 / 隐藏文件 / 多选 / 快捷键 / 状态持久化。预览(M1b)、写操作(M1c)、压缩包(M2)、插件(M3) 未做，接口已留 |
+| 文件管理 | ✅ M1a | 常驻收藏栏（常用位置 + 可增删收藏夹）+ 等比双面板（窗口任何宽度左右等宽）+ 响应式列宽；导航 / 四列排序 / 过滤 / 隐藏文件 / 多选 / 快捷键 / 状态持久化。预览(M1b)、写操作(M1c)、压缩包(M2)、插件(M3) 未做，接口已留 |
 
 ## 旧数据迁移（重装麒麟后）
 
@@ -59,6 +59,7 @@ workspace/
   backend.py       WorkspaceDB（SQLite）+ ScriptRunner（QProcess）
   filecore/        文件管理纯逻辑层（零 Qt 依赖）
     vpath.py / entries.py / listing.py / cancel.py / state.py
+    locations.py                    常用位置（XDG user-dirs 感知，零 Qt）
     sources/{__init__,local}.py     FileSource 抽象与本地实现
     preview/base.py                 两阶段预览器协议（注册表暂空）
     selfcheck.py                   python -m filecore.selfcheck
@@ -71,7 +72,8 @@ workspace/
   qml/LogPage.qml  日历 + 条目 + 编辑器
   qml/TodoPage.qml 待办
   qml/ScriptsPage.qml  脚本面板
-  qml/FileManagerPage.qml / FmPanel.qml   双面板页面
+  qml/FileManagerPage.qml / FmPanel.qml / FavoritesBar.qml
+                                    等比双面板布局 / 单面板 / 常驻收藏栏
   qml/PlaceholderPage.qml  旧占位页（保留，不再被引用）
 ```
 
@@ -79,7 +81,7 @@ workspace/
 
 ```bash
 .venv/bin/pyside6-qmllint qml/*.qml 2>&1 | grep '^Error'   # 期望 0 行
-TMPDIR=$PWD/.tmp .venv/bin/python -m filecore.selfcheck     # 15 项全 OK
+TMPDIR=$PWD/.tmp .venv/bin/python -m filecore.selfcheck     # 17 项全 OK（含等比布局与收藏状态断言）
 FC_SELFCHECK_ITEMS=5000 TMPDIR=$PWD/.tmp .venv/bin/python -m filecore.selfcheck  # 重压测（可选）
 TMPDIR=$PWD/.tmp WORKSPACE_HOME=$PWD/.tmp/home QT_QPA_PLATFORM=offscreen \
   WS_SMOKE=1 .venv/bin/python main.py                     # 日志里不能有 QML 报错

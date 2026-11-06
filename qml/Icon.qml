@@ -133,6 +133,35 @@ Item {
                 ctx.moveTo(w * 0.18, h * 0.52); ctx.lineTo(w * 0.66, h * 0.52); ctx.stroke()
                 ctx.beginPath()
                 ctx.moveTo(w * 0.18, h * 0.74); ctx.lineTo(w * 0.50, h * 0.74); ctx.stroke()
+            } else if (root.name === "star") {
+                // 收藏：五角星（十点交替外径/内径）
+                ctx.beginPath()
+                var cx = w * 0.50
+                var cy = h * 0.50
+                var ro = Math.min(w, h) * 0.44
+                var ri = ro * 0.43
+                for (var i = 0; i < 10; ++i) {
+                    var ang = -Math.PI / 2 + i * Math.PI / 5
+                    var rad = (i % 2 === 0) ? ro : ri
+                    var px = cx + Math.cos(ang) * rad
+                    var py = cy + Math.sin(ang) * rad
+                    if (i === 0) ctx.moveTo(px, py)
+                    else ctx.lineTo(px, py)
+                }
+                ctx.closePath()
+                ctx.stroke()
+            } else if (root.name === "plus") {
+                // 添加收藏
+                ctx.beginPath()
+                ctx.moveTo(w * 0.50, h * 0.20); ctx.lineTo(w * 0.50, h * 0.80); ctx.stroke()
+                ctx.beginPath()
+                ctx.moveTo(w * 0.20, h * 0.50); ctx.lineTo(w * 0.80, h * 0.50); ctx.stroke()
+            } else if (root.name === "close") {
+                // 移除收藏
+                ctx.beginPath()
+                ctx.moveTo(w * 0.28, h * 0.28); ctx.lineTo(w * 0.72, h * 0.72); ctx.stroke()
+                ctx.beginPath()
+                ctx.moveTo(w * 0.72, h * 0.28); ctx.lineTo(w * 0.28, h * 0.72); ctx.stroke()
             } else { // folder（兜底：未知 name 一律画文件夹，新图标必须插在本分支之前）
                 ctx.beginPath()
                 ctx.moveTo(1.8, h - 3.4)
