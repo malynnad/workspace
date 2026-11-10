@@ -1,18 +1,22 @@
-"""QuickLook 式两阶段预览器协议（M1a：协议完整、注册表为空）。
+"""QuickLook 式两阶段预览器协议。
 
-参照 QuickLook 的 IViewer（reference/插件体系研究笔记 :66-94）：
-prepare 只做 <10ms 的元数据工作，view 才做耗时加载 —— 这正是「先出窗口后出内容」、
-治 3~4MB 图片预览卡顿的关键。
+参照 QuickLook 的 IViewer：prepare 只做 <10ms 的元数据工作（窗口标题/类型/大小
+立刻可显示），view 才做耗时 I/O —— 这正是「先出窗口后出内容」、治大图预览卡顿
+的关键。view 一律跑在 TaskRunner 的 preview 池里，回传的 PreviewPayload 只装
+str/int/bool/dict/list，绝不装 QImage / QPixmap（工作线程不能碰 Qt GUI 类）。
 
-本步刻意不写任何抛 NotImplementedError 的空方法：
-协议 + pick() 完整可用，只是 REGISTRY 为空所以恒返回 None；
-M1b 只要 register(...) 四次，上层和 QML 一行都不用改。
+M1a 只留空注册表；M1b 由 preview/__init__.py 的 bootstrap() 注册四种内置预览器。
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 from typing import Any, Protocol
+
+MAX_TEXT_BYTES = 256 * 1024        # 文本预览最多读 256 KB
+MAX_TEXT_LINES = 4000              # 最多 4000 行，避免超长单行撑爆 TextEdit
+MAX_IMAGE_BYTES = 32 * 1024 * 1024  # 超过 32 MB 不交给 QML Image 解码
+MAX_LIST_ITEMS = 12                # 目录摘要最多列 12 项
 
 
 @dataclass(frozen=True)
@@ -27,6 +31,30 @@ class PreviewPayload:
     """只装纯数据（str/int/list/bytes），绝不装 QImage / QPixmap。"""
     kind: str
     data: Any = None
+
+
+@dataclass(frozen=True)
+class PreviewContext:
+    """view 阶段的限额与取消令牌（纯 Python，跨线程传值安全）。"""
+    cancel: Any = None
+    max_text_bytes: int = MAX_TEXT_BYTES
+    max_text_lines: int = MAX_TEXT_LINES
+    max_image_bytes: int = MAX_IMAGE_BYTES
+    max_list_items: int = MAX_LIST_ITEMS
+
+
+def common_meta(entry) -> dict:
+    """四种预览器共用的标题栏字段；不在 prepare 里读文件内容。"""
+    from .. import vpath
+    from ..entries import kind_label
+    return {
+        "kindLabel": kind_label(entry.kind),
+        "sizeText": entry.size_text,
+        "timeText": entry.time_text,
+        "display": vpath.display(entry.vpath),
+        "isDir": bool(entry.is_dir),
+        "name": entry.name,
+    }
 
 
 class Previewer(Protocol):

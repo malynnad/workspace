@@ -92,6 +92,10 @@ Item {
         filterField.selectAll()
     }
 
+    function focusList() {
+        list.forceActiveFocus()
+    }
+
     function statusText() {
         var n = root.panel ? root.panel.totalCount : 0
         var m = root.panel ? root.panel.visibleCount : 0
@@ -379,6 +383,9 @@ Item {
                     }
 
                     Keys.onPressed: function(event) {
+                        // 浮窗打开时所有键交给页面级预览 Shortcut，
+                        // 否则 ↑↓ / 空格 / 回车会同时改列表选中或导航目录。
+                        if (files.preview.open) return
                         var delta = 0
                         var next = 0
                         var vp = ""
@@ -402,7 +409,9 @@ Item {
                         } else if (event.key === Qt.Key_Backspace) {
                             root.panel.goUp(); event.accepted = true
                         } else if (event.key === Qt.Key_Space) {
-                            // M1b 打开预览能力后这里自动生效，M1a 按空格无任何 UI
+                            // M1b：空格打开当前选中项的浮窗预览（文件夹也可看摘要）。
+                            // 先同步激活面板，否则浮窗里按 ↑↓ 会去另一端面板找相邻项。
+                            root.activated()
                             if (files.preview.available && root.currentVpath !== "")
                                 files.preview.request(root.currentVpath)
                             event.accepted = true

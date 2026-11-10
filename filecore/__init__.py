@@ -10,8 +10,10 @@ __version__ = "1.0"
 
 
 def bootstrap():
-    """注册内置 FileSource。显式调用，避免包初始化期的循环依赖。"""
+    """注册内置 FileSource 与预览器。显式调用，避免包初始化期的循环依赖。"""
     from .sources import register
     from .sources.local import LocalSource
+    from .preview import bootstrap as register_previewers
 
     register(LocalSource())
+    register_previewers()

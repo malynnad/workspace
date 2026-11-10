@@ -76,6 +76,12 @@ ApplicationWindow {
         }
     }
 
+    // M1b 文件预览浮窗：挂在窗口级，遮罩覆盖整个窗口（含侧栏），
+    // 快捷键与开关仍由 FileManagerPage 管理。z 低于 Toast。
+    PreviewWindow {
+        z: 800
+    }
+
     // 全局轻提示（顶部居中）
     ToastHost {
         anchors.fill: parent

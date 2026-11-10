@@ -294,13 +294,22 @@ class FilePanel(QObject):
         if item.get("isDir"):
             self.openUri(vp)
         else:
-            # M1a：available=False，无任何 UI；M1b 打开能力后这里直接生效
+            # M1b：双击文件直接开浮窗预览（目录仍然是进入，见上一个分支）
             self._backend._preview.request(vp)
 
     @Slot(int, result=str)
     def vpathAt(self, row):
         """键盘上下移动时，QML 用行号换回 vpath（模型在 Python 侧）。"""
         return self._model.vpath_at(int(row))
+
+    @Slot(str, int, result=str)
+    def adjacentVpath(self, vp, delta):
+        """浮窗预览里按 ↑↓ 时取同目录可见列表的相邻项，越界返回空串。"""
+        row = self._model.row_of(vp)
+        if row < 0:
+            return ""
+        nxt = max(0, min(self._model.rowCount() - 1, row + int(delta)))
+        return self._model.vpath_at(nxt) or ""
 
     # 常用位置已上移到 FileManagerBackend.standardLocations() -> filecore/locations.py
     # （收藏栏是页面级的，不该左右面板各算一份）。
@@ -462,7 +471,7 @@ class FileManagerBackend(QObject):
         self._state_path = self._app_home / "filemanager_state.json"
 
         self._runner = TaskRunner(self)
-        self._preview = PreviewProvider(self)
+        self._preview = PreviewProvider(self, self)
         self._active_side = "left"
         self._left_width = state.DEFAULT_LEFT_WIDTH
         self._favorites: list[str] = []          # 存 vpath，不是绝对路径
@@ -479,8 +488,11 @@ class FileManagerBackend(QObject):
         self._save_timer.setInterval(400)
         self._save_timer.timeout.connect(self.saveState)
 
-        # 显式 QueuedConnection：finished 从工作线程发出，模型操作必须回主线程
+        # 显式 QueuedConnection：finished 从工作线程发出，模型/属性操作必须回主线程。
+        # 预览与列表各自只认自己的 job id，互不干扰。
         self._runner.finished.connect(self._on_job_finished, Qt.QueuedConnection)
+        self._runner.finished.connect(self._preview._on_job_finished,
+                                      Qt.QueuedConnection)
         for panel in self._panels.values():
             for sig in (panel.cwdChanged, panel.historyChanged, panel.sortChanged,
                         panel.hiddenChanged):
@@ -603,9 +615,10 @@ class FileManagerBackend(QObject):
 
     @Slot()
     def shutdown(self):
-        """退出前排干后台扫描，避免工作线程在对象销毁后继续发信号。"""
+        """退出前排干后台扫描与预览，避免工作线程在对象销毁后继续发信号。"""
         self._left._batch.stop()
         self._right._batch.stop()
+        self._preview._cancel_pending()
         self._runner.shutdown()
 
     @Slot()

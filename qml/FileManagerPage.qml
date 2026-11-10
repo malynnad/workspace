@@ -1,7 +1,7 @@
 import QtQuick
 import QtQuick.Layouts
 
-// 阶段 2 · M1a：常驻收藏栏 + 等比双面板浏览页。
+// 阶段 2 · M1a 浏览 + M1b 浮窗预览：常驻收藏栏 + 等比双面板 + QuickLook 式浮层。
 //
 // 布局推导（wPage 里的 214 来自 Main.qml:23 全局侧栏宽、40 来自 Theme.pad × 2，
 // 改这两处必须同步改下面的表达式）：
@@ -33,12 +33,17 @@ Item {
         files.activeSide === "left" ? files.left.cwd : files.right.cwd
 
     readonly property bool pageActive: StackLayout.isCurrentItem
-    readonly property bool shortcutOk: root.pageActive &&
+    // 预览浮窗打开时，浏览用的 9 个快捷键全部让位给下面 4 个预览快捷键。
+    readonly property bool shortcutOk: root.pageActive && !files.preview.open &&
         !leftPanel.addressFocused && !leftPanel.filterFocused &&
         !rightPanel.addressFocused && !rightPanel.filterFocused
+    readonly property bool previewKeysOk: root.pageActive && files.preview.open
 
     function activePanel() { return files.activeSide === "left" ? files.left : files.right }
     function activeFm() { return files.activeSide === "left" ? leftPanel : rightPanel }
+
+    // 切到别的模块时把浮窗收掉，免得状态是 open 但页面不可见。
+    onPageActiveChanged: { if (!root.pageActive) files.preview.close() }
 
     ColumnLayout {
         anchors.fill: parent
@@ -159,6 +164,15 @@ Item {
         function onToast(msg) { Toast.show(msg) }
     }
 
+    // ---- M1b 浮窗预览 ----
+    // PreviewWindow 实例挂在 Main.qml 窗口级（遮罩覆盖整个窗口，含侧栏），
+    // 这里只负责开关联动、关闭后把焦点还给列表、以及下面的 4 个预览快捷键。
+    Connections {
+        target: files.preview
+        function onClosed() { root.activeFm().focusList() }
+        function onUnavailable() { Toast.show("当前不支持预览此项目") }
+    }
+
     // ---------------- 全局快捷键（只在当前页且输入框未聚焦时生效） ----------------
     // 预留 Ctrl+D「收藏当前目录」，与现有 9 个快捷键不冲突，M1b 再启用。
     Shortcut {
@@ -205,5 +219,27 @@ Item {
         sequence: "Tab"
         enabled: root.shortcutOk
         onActivated: files.toggleActiveSide()
+    }
+
+    // ---------------- 预览浮窗专用快捷键（窗口级，优先于列表的 Keys） ----------------
+    Shortcut {
+        sequence: "Esc"
+        enabled: root.previewKeysOk
+        onActivated: files.preview.close()
+    }
+    Shortcut {
+        sequence: "Space"
+        enabled: root.previewKeysOk
+        onActivated: files.preview.close()
+    }
+    Shortcut {
+        sequence: "Up"
+        enabled: root.previewKeysOk
+        onActivated: files.preview.step(-1)
+    }
+    Shortcut {
+        sequence: "Down"
+        enabled: root.previewKeysOk
+        onActivated: files.preview.step(1)
     }
 }

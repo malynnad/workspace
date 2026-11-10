@@ -321,10 +321,136 @@ def _registry_and_preview():
         pass
     else:
         raise AssertionError("M2 之前 zip+file 应当未注册")
-    assert preview_base.REGISTRY == []
-    assert preview_base.pick(None) is None
+    # M1b：四种内置预览器已注册，且按 priority 降序（兜底永远最后）
+    assert len(preview_base.REGISTRY) == 4, preview_base.REGISTRY
+    prios = [p.priority for p in preview_base.REGISTRY]
+    assert prios == sorted(prios, reverse=True), prios
+    assert prios[-1] == 0
     spec = preview_base.PreviewSpec(kind="image", title="a.jpg")
     assert spec.kind == "image"
+
+
+def _preview_pipeline():
+    """两阶段协议：prepare 只读元信息、view 回纯数据、四种分发与降级。"""
+    import struct
+    from .preview import base as pb
+    from .preview import probe
+    from .sources.local import LocalSource
+
+    bootstrap()
+    tmp = tempfile.mkdtemp(prefix="fc_selfcheck_preview_")
+    src = LocalSource()
+
+    def put(name, data):
+        path = os.path.join(tmp, name)
+        with open(path, "wb") as f:
+            f.write(data)
+        return path
+
+    def entry_of(name, forced_size=None):
+        path = os.path.join(tmp, name)
+        size = forced_size if forced_size is not None else os.stat(path).st_size
+        return make_entry(name, vpath.encode_path(path), False, size, 1700000000)
+
+    def plain(v):
+        assert type(v) in (str, int, float, bool, dict, list), (type(v), v)
+        if isinstance(v, dict):
+            for x in v.values():
+                plain(x)
+        elif isinstance(v, list):
+            for x in v:
+                plain(x)
+
+    try:
+        # 最小 PNG 头：signature + IHDR(16x9)
+        put("pic.png", b"\x89PNG\r\n\x1a\n\x00\x00\x00\x0dIHDR"
+            + struct.pack(">II", 16, 9) + b"\x08\x06\x00\x00\x00" + b"\x00" * 8)
+        put("note.txt", "第一行\n中文内容\n".encode("utf-8"))
+        put("gb.txt", "简体中文\n".encode("gb18030"))
+        put("bin.dat", b"\x00\x01\x02\xff" * 4)
+        put("doc.pdf", b"%PDF-1.4\n")
+        sub = os.path.join(tmp, "子目录")
+        os.mkdir(sub)
+        for n in ("a.txt", "b.txt"):
+            put(os.path.join("子目录", n), b"x")
+
+        # prepare 阶段只返回元信息（不读文件内容，不需要文件真的可读）
+        pic = entry_of("pic.png")
+        picker = pb.pick(pic)
+        assert type(picker).__name__ == "ImagePreviewer"
+        spec = picker.prepare(pic)
+        assert spec.kind == "image" and spec.title == "pic.png"
+        assert set(spec.meta) >= {"kindLabel", "sizeText", "timeText", "display"}
+        payload = picker.view(pic, pb.PreviewContext())
+        assert payload.kind == "image"
+        assert payload.data["width"] == 16 and payload.data["height"] == 9
+        assert payload.data["format"] == "PNG"
+        assert payload.data["source"] == pic.vpath and not payload.data["tooLarge"]
+        plain(payload.data)
+
+        # 超大图：view 必须直接放弃解码，绝不读文件
+        huge = entry_of("pic.png", pb.MAX_IMAGE_BYTES + 1)
+        p = pb.pick(huge).view(huge, pb.PreviewContext())
+        assert p.data["tooLarge"] and "跳过" in p.data["error"]
+
+        # 文本：UTF-8 / GB18030 / 二进制降级 / 截断
+        e_txt = entry_of("note.txt")
+        p = pb.pick(e_txt)
+        assert type(p).__name__ == "TextPreviewer"
+        assert p.prepare(e_txt).kind == "text"
+        r = p.view(e_txt, pb.PreviewContext())
+        assert r.kind == "text" and "中文内容" in r.data["text"]
+        assert r.data["encoding"] in ("utf-8", "utf-8-sig") and r.data["lines"] == 2
+        plain(r.data)
+        r = pb.pick(entry_of("gb.txt")).view(entry_of("gb.txt"), pb.PreviewContext())
+        assert "简体中文" in r.data["text"], r.data
+        assert r.data["encoding"] == "gb18030", r.data["encoding"]
+        r = pb.pick(entry_of("bin.dat")).view(entry_of("bin.dat"), pb.PreviewContext())
+        assert r.kind == "fallback", r.data       # 二进制不显示乱码
+        long_text = put("long.txt", ("行\n" * 100).encode("utf-8"))
+        e_long = entry_of("long.txt")
+        r = pb.pick(e_long).view(e_long, pb.PreviewContext(max_text_bytes=32))
+        assert r.data["truncated"] and r.data["lines"] <= 100
+
+        # SVG 不看图、按源码走文本预览
+        put("icon.svg", b"<svg></svg>")
+        e_svg = entry_of("icon.svg")
+        assert type(pb.pick(e_svg)).__name__ == "TextPreviewer"
+
+        # 目录摘要：只扫一层、目录恒优先、条目数受限额
+        dir_entry = src.entry(vpath.encode_path(sub))
+        p = pb.pick(dir_entry)
+        assert type(p).__name__ == "DirectoryPreviewer"
+        assert p.prepare(dir_entry).kind == "directory"
+        r = p.view(dir_entry, pb.PreviewContext(max_list_items=1))
+        assert r.data["count"] == 2 and r.data["fileCount"] == 2
+        assert len(r.data["items"]) == 1
+        plain(r.data)
+        token = CancelToken()
+        token.cancel()
+        assert p.view(dir_entry, pb.PreviewContext(cancel=token)).data["count"] <= 1
+
+        # 其余类型一律兜底信息卡
+        e_pdf = entry_of("doc.pdf")
+        p = pb.pick(e_pdf)
+        assert type(p).__name__ == "FallbackPreviewer"
+        r = p.view(e_pdf, pb.PreviewContext())
+        assert r.kind == "fallback" and "M2" in r.data["hint"]
+        assert pb.pick(None).__class__.__name__ == "FallbackPreviewer"
+
+        # 图片头探测的其它格式
+        put("a.gif", b"GIF89a" + struct.pack("<HH", 7, 11) + b"\x00" * 10)
+        put("a.bmp", b"BM" + b"\x00" * 16 + struct.pack("<ii", 5, -9) + b"\x00" * 10)
+        put("a.jpg", b"\xff\xd8\xff\xe0" + struct.pack(">H", 16) + b"JFIF\x00"
+            + b"\x00" * 9 + b"\xff\xc0" + struct.pack(">H", 17) + b"\x08"
+            + struct.pack(">HH", 21, 13) + b"\x00" * 9)
+        assert probe.image_info(os.path.join(tmp, "a.gif"))["width"] == 7
+        assert probe.image_info(os.path.join(tmp, "a.bmp"))["height"] == 9
+        assert probe.image_info(os.path.join(tmp, "a.jpg"))["width"] == 13
+        assert probe.image_info(os.path.join(tmp, "doc.pdf")) is None
+        assert probe.image_info(os.path.join(tmp, "不存在.png")) is None
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
 
 
 def _zero_qt():
@@ -349,7 +475,8 @@ def main() -> int:
         ("state 读写 / 坏 JSON / 版本 / 路径回退", _state),
         ("等比布局数值 / 四档列宽契约", _layout_ratio),
         ("收藏项往返 / 旧配置兼容 / 常用位置", _favorites_state),
-        ("FileSource 注册表 / 预览器空注册", _registry_and_preview),
+        ("FileSource 注册表 / 四种预览器注册", _registry_and_preview),
+        ("预览两阶段协议 / 文本编码 / 图片头 / 目录摘要", _preview_pipeline),
         ("零 Qt 依赖", _zero_qt),
     ]:
         check(label, fn)

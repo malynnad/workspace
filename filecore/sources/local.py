@@ -64,13 +64,13 @@ class LocalSource(FileSource):
         return make_entry(name, v, is_dir, size, mtime)
 
     def capabilities(self, v: str) -> dict:
-        # M1a 只读。M1c 翻位后 QML 里的写操作按钮会自动出现。
+        # M1b 打开预览能力；写操作仍是 M1c，翻位后 QML 里的按钮会自动出现。
         return {
             "canWrite": False,
             "canPaste": False,
             "canRename": False,
             "canTrash": False,
-            "canPreview": False,
+            "canPreview": True,
             "canArchive": False,
             "sources": ["file"],
             "watch": False,

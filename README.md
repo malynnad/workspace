@@ -43,7 +43,7 @@ python3 -m venv .venv
 | 日志→待办 | ✅ | 日志编辑器里「转为待办」按钮，content 取主题或正文首行 |
 | 脚本面板 | ✅ | 扫描 scripts 目录、QProcess 运行、输出回显、双击即跑 |
 | 模板回复 | 未做 | 表已建（templates），UI 阶段 1 后期加，可开关 |
-| 文件管理 | ✅ M1a | 常驻收藏栏（常用位置 + 可增删收藏夹）+ 等比双面板（窗口任何宽度左右等宽）+ 响应式列宽；导航 / 四列排序 / 过滤 / 隐藏文件 / 多选 / 快捷键 / 状态持久化。预览(M1b)、写操作(M1c)、压缩包(M2)、插件(M3) 未做，接口已留 |
+| 文件管理 | ✅ M1a + M1b | 常驻收藏栏（常用位置 + 可增删收藏夹）+ 等比双面板（窗口任何宽度左右等宽）+ 响应式列宽；导航 / 四列排序 / 过滤 / 隐藏文件 / 多选 / 快捷键 / 状态持久化。M1b 浮窗预览：空格打开、Esc/空格关闭、↑↓ 切换相邻项、**拖动标题栏移动 + 双击复位**；四种预览器（图片/文本/文件夹摘要/兜底信息卡）。写操作(M1c)、压缩包(M2)、插件(M3) 未做，接口已留 |
 
 ## 旧数据迁移（重装麒麟后）
 
@@ -61,7 +61,10 @@ workspace/
     vpath.py / entries.py / listing.py / cancel.py / state.py
     locations.py                    常用位置（XDG user-dirs 感知，零 Qt）
     sources/{__init__,local}.py     FileSource 抽象与本地实现
-    preview/base.py                 两阶段预览器协议（注册表暂空）
+    preview/                        两阶段预览器协议 + 四个内置预览器（零 Qt）
+      base.py                       prepare(<10ms 出窗口) / view(后台加载) + 注册表
+      textread.py / probe.py        安全文本读取与编码探测 / 纯 Python 图片尺寸探测
+      image.py / text.py / directory.py / fallback.py
     selfcheck.py                   python -m filecore.selfcheck
   file_model.py    FileListModel（QAbstractListModel，10 个 role）
   task_runner.py   后台任务三池（M1a 只实例化 IO 池）
@@ -74,6 +77,7 @@ workspace/
   qml/ScriptsPage.qml  脚本面板
   qml/FileManagerPage.qml / FmPanel.qml / FavoritesBar.qml
                                     等比双面板布局 / 单面板 / 常驻收藏栏
+  qml/PreviewWindow.qml            QuickLook 式浮窗预览（挂在 Main.qml 窗口级，遮罩盖住侧栏）
   qml/PlaceholderPage.qml  旧占位页（保留，不再被引用）
 ```
 
@@ -81,7 +85,7 @@ workspace/
 
 ```bash
 .venv/bin/pyside6-qmllint qml/*.qml 2>&1 | grep '^Error'   # 期望 0 行
-TMPDIR=$PWD/.tmp .venv/bin/python -m filecore.selfcheck     # 17 项全 OK（含等比布局与收藏状态断言）
+TMPDIR=$PWD/.tmp .venv/bin/python -m filecore.selfcheck     # 18 项全 OK（含等比布局、收藏状态、四种预览器断言）
 FC_SELFCHECK_ITEMS=5000 TMPDIR=$PWD/.tmp .venv/bin/python -m filecore.selfcheck  # 重压测（可选）
 TMPDIR=$PWD/.tmp WORKSPACE_HOME=$PWD/.tmp/home QT_QPA_PLATFORM=offscreen \
   WS_SMOKE=1 .venv/bin/python main.py                     # 日志里不能有 QML 报错

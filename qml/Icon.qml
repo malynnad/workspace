@@ -157,11 +157,24 @@ Item {
                 ctx.beginPath()
                 ctx.moveTo(w * 0.20, h * 0.50); ctx.lineTo(w * 0.80, h * 0.50); ctx.stroke()
             } else if (root.name === "close") {
-                // 移除收藏
+                // 关闭 / 移除收藏
                 ctx.beginPath()
                 ctx.moveTo(w * 0.28, h * 0.28); ctx.lineTo(w * 0.72, h * 0.72); ctx.stroke()
                 ctx.beginPath()
                 ctx.moveTo(w * 0.72, h * 0.28); ctx.lineTo(w * 0.28, h * 0.72); ctx.stroke()
+            } else if (root.name === "file") {
+                // 普通文件（预览浮窗标题栏 / 兜底信息卡）
+                ctx.beginPath()
+                ctx.moveTo(w * 0.24, h * 0.10)
+                ctx.lineTo(w * 0.60, h * 0.10)
+                ctx.lineTo(w * 0.78, h * 0.28)
+                ctx.lineTo(w * 0.78, h * 0.90)
+                ctx.lineTo(w * 0.24, h * 0.90)
+                ctx.closePath()
+                ctx.stroke()
+                ctx.beginPath()
+                ctx.moveTo(w * 0.60, h * 0.10); ctx.lineTo(w * 0.60, h * 0.28)
+                ctx.lineTo(w * 0.78, h * 0.28); ctx.stroke()
             } else { // folder（兜底：未知 name 一律画文件夹，新图标必须插在本分支之前）
                 ctx.beginPath()
                 ctx.moveTo(1.8, h - 3.4)

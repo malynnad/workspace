@@ -1,8 +1,8 @@
 """后台任务调度（Qt 层）。
 
 三池常量按前序定稿一次写全：IO_POOL=3 / PREVIEW_POOL=1 / OP_POOL=1。
-M1a 只实例化 io 池（8GB 内存吃紧，不预建空池）；M1b 加 "preview"、
-M1c 加 "op" 各只需在 _pools 里加一行。
+M1a 只实例化 io 池（8GB 内存吃紧，不预建空池）；M1b 加了 "preview" 单线程池
+（预览任务串行，连按方向键时旧任务直接丢弃），M1c 再加 "op"。
 
 worker 只回传纯数据（list/dict/str），绝不回传自定义对象或 QImage；
 finished 信号用 QueuedConnection 接回主线程，模型操作一律在主线程做。
@@ -49,8 +49,9 @@ class TaskRunner(QObject):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self._pools = {"io": QThreadPool(self)}
+        self._pools = {"io": QThreadPool(self), "preview": QThreadPool(self)}
         self._pools["io"].setMaxThreadCount(IO_POOL)
+        self._pools["preview"].setMaxThreadCount(PREVIEW_POOL)
         self._counter = itertools.count(1)
         self._lock = threading.Lock()
         self._tokens: dict[str, CancelToken] = {}
