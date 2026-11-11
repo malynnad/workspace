@@ -42,7 +42,7 @@ Window {
     property var pvData: ({})
     property var pvItems: []
     property var pvKinds: []
-    property var pvPages: []
+    property var pvSizes: []
     property string pvLastVpath: ""
     // 解锁请求在途：只让按钮变「解锁中…」，不切 loading —— 切了会把密码框盖住，
     // 密码输错时用户得从头再敲一遍。
@@ -56,7 +56,27 @@ Window {
     readonly property bool textVisible: textFlick.visible
     readonly property bool pdfVisible: pdfBox.visible
     readonly property bool pdfListVisible: pdfList.visible
-    readonly property int pdfPageCount: root.pvPages.length
+    readonly property int pdfPageCount: root.pvData.pageCount || 0
+    // PDF 页图走 image://pdfpage/<token>/<页码>/<宽度>：后端在工作线程里直接
+    // 把 QImage 交给 QML，不落盘也不编码（PNG 编码比渲染本身慢 4~14 倍）。
+    // 宽度同样量化到 128 的整数倍，拖窗口时只有跨档才重渲染。
+    readonly property int pdfDecodeW: {
+        var dpr = (Screen.devicePixelRatio > 0) ? Screen.devicePixelRatio : 1
+        var want = Math.ceil((pdfList.width - 32) * dpr / 128) * 128
+        return Math.max(320, Math.min(2400, want))
+    }
+    readonly property string pdfToken: root.pvData.token || ""
+    function pdfPageAspect(index) {
+        if (index < 0 || index >= root.pvSizes.length)
+            return 297 / 210
+        var s = root.pvSizes[index]
+        return (s && s[0] > 0) ? (s[1] / s[0]) : (297 / 210)
+    }
+    function pdfPageSource(index) {
+        if (!root.pdfToken)
+            return ""
+        return "image://pdfpage/" + root.pdfToken + "/" + index + "/" + root.pdfDecodeW
+    }
     // ListView 的委托不在 findChildren 里，itemAtIndex() 又不能写在属性绑定里
     // （函数调用不算依赖，绑定只算一次，永远拿到 null）。改成委托自己往这几个
     // 普通属性里回填：既能验证委托真的建了，也能读到真实高度与解码状态。
@@ -333,15 +353,13 @@ Window {
             root.pvData = files.preview.payload
             root.pvItems = root.pvData.items ? root.pvData.items : []
             root.pvKinds = root.pvData.kinds ? root.pvData.kinds : []
-            root.pvPages = root.pvData.pages ? root.pvData.pages : []
-            // PDF 续渲会再推一次 payload，那次不能跳回第一页（用户可能已经在看第 5 页）；
-            // 只有换了文件才复位到顶部。
+            root.pvSizes = root.pvData.sizes ? root.pvData.sizes : []
             var vp = files.preview.currentVpath
             var isNew = (vp !== root.pvLastVpath)
             if (isNew) {
                 root.pvLastVpath = vp
                 pwField.text = ""          // 别把上一个文件的密码留在框里
-                if (root.pvPages.length > 0)
+                if (root.pdfPageCount > 0)
                     pdfList.positionViewAtBeginning()
             }
             root.unlocking = false
@@ -571,9 +589,8 @@ Window {
                     }
 
                     // PDF：按页竖排、宽度铺满，可以整篇顺着往下看（逐个审核的用法）。
-                    // 用 ListView 而不是 Repeater：只有看得见的那一两页会被创建/解码，
-                    // 60 页的文档全塞进去要 600 MB 内存（麒麟 8GB 扛不住）。
-                    // 页图是后端在工作线程里渲好落盘的 PNG，这里只管读。
+                    // ListView 只创建看得见的一两页；每页的位图由 image://pdfpage
+                    // 在后台按需渲染，滚到哪渲到哪，打开文件时不做任何栅格化。
                     Item {
                         id: pdfBox
                         anchors.fill: parent
@@ -582,17 +599,18 @@ Window {
                         ListView {
                             id: pdfList
                             anchors.fill: parent
-                            visible: root.pvPages.length > 0 && !root.pvData.error
+                            visible: root.pdfPageCount > 0 && !root.pvData.error
                             clip: true
-                            model: root.pvPages
+                            model: root.pdfPageCount
                             spacing: 14
                             topMargin: 12
                             bottomMargin: 12
-                            cacheBuffer: 120
+                            cacheBuffer: 200
                             boundsBehavior: Flickable.StopAtBounds
                             ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
 
                             delegate: Item {
+                                required property int index
                                 width: pdfList.width
                                 height: sheet.height + 26
                                 // 只上报第一页，供离屏探针读（见文件头 pdfFirstItemH 说明）
@@ -602,11 +620,11 @@ Window {
                                 }
                                 Rectangle {
                                     id: sheet
-                                    // 页宽 = 视口宽 - 两侧留白；高度按页面真实比例算，
-                                    // 后端渲出来的 w/h 就是这一页的比例，横版页也不会变形。
+                                    // 页宽 = 视口宽 - 两侧留白；高度按这一页的真实 pt
+                                    // 比例算（后端把 /Rotate 也吃进去了），横版页不变形。
                                     x: Math.round((parent.width - width) / 2)
                                     width: Math.max(120, pdfList.width - 32)
-                                    height: Math.max(60, width * (modelData.h / modelData.w))
+                                    height: Math.max(60, width * root.pdfPageAspect(index))
                                     radius: 4
                                     color: "#FFFFFF"
                                     border.width: 1
@@ -618,9 +636,10 @@ Window {
                                     Image {
                                         anchors.fill: parent
                                         anchors.margins: 1
-                                        source: modelData.source
+                                        source: root.pdfPageSource(index)
                                         asynchronous: true
-                                        // 关掉 cache：翻页/滚走就释放位图，别在内存里堆整本
+                                        // 关掉 cache：滚走就把纹理放掉，内存只留
+                                        // provider 里那几页 LRU，不会堆整本
                                         cache: false
                                         fillMode: Image.PreserveAspectFit
                                         onStatusChanged: {
@@ -632,7 +651,7 @@ Window {
                                 Text {
                                     anchors.horizontalCenter: parent.horizontalCenter
                                     anchors.bottom: parent.bottom
-                                    text: "第 " + (modelData.index + 1) + " / " + root.pvData.pageCount + " 页"
+                                    text: "第 " + (index + 1) + " / " + root.pdfPageCount + " 页"
                                     font.pixelSize: 11
                                     color: Theme.textMuted
                                 }
@@ -651,7 +670,7 @@ Window {
                             radius: 6
                             color: Theme.surface
                             opacity: 0.92
-                            visible: !root.pvData.error && root.pvPages.length > 0 &&
+                            visible: !root.pvData.error && root.pdfPageCount > 0 &&
                                      !!root.pvData.note
                             Text {
                                 id: pdfNote

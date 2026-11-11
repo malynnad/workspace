@@ -16,37 +16,38 @@ from filecore.preview import base
 from filecore.sources import UnknownScheme, resolve
 
 
-def _view_job(previewer, entry, gen, first_only=False, password="", cancel=None):
+def _view_job(previewer, entry, gen, password="", cancel=None):
     """工作线程：只调零 Qt 的 previewer.view，异常一律转成中文结果。
 
-    PDF 是唯一需要「Qt 侧补一刀」的类型：解析/栅格化必须用 QPdfDocument，
-    而 filecore 里不能出现 Qt 类，所以在这里（仍在工作线程里）把页图补进 payload。
-    first_only=True 时只渲首屏一页，剩下的由调用方再排一次任务续渲。
+    PDF 是唯一需要「Qt 侧补一刀」的类型：真正的栅格化要用 PyMuPDF / QPdfDocument，
+    而 filecore 里不能出现 Qt 与第三方渲染库。这里只做**探测**（页数、每页尺寸、
+    密码状态、token），页面本身由 QML 的 image://pdfpage/... 按需取 —— 所以
+    「打开一个 PDF」是毫秒级的，不再等整篇渲完。
     password 只对加密 PDF 有用，其余类型忽略。
     """
     try:
         payload = previewer.view(entry, base.PreviewContext(cancel=cancel))
         data = payload.data if isinstance(payload.data, dict) else {}
         if payload.kind == "pdf" and not data.get("error"):
-            data = _pdf_payload(data, cancel, first_only, password)
+            data = _pdf_payload(data, password)
         return {"gen": gen, "kind": payload.kind, "data": data}
     except Exception as exc:
         return {"gen": gen, "error": f"预览失败：{type(exc).__name__}: {exc}"}
 
 
-def _pdf_payload(data, cancel, first_only=False, password=""):
-    """把 PDF 页渲染成 PNG 缓存，回传纯数据（source/w/h/index）。"""
+def _pdf_payload(data, password=""):
+    """探测 PDF：把「能看多少页 / 每页多大 / 要不要密码」回传，不渲染任何页。"""
     merged = dict(data)
     local = merged.get("localPath") or ""
     if not local:
         return merged
     try:
-        from pdf_render import render_pdf
-        merged.update(render_pdf(local, cancel=cancel, first_only=first_only,
-                                 password=password))
-    except Exception as exc:                     # QtPdf 缺失 / 未打包时的兜底
+        import pdf_pages
+        merged.update(pdf_pages.probe(local, password=password))
+    except Exception as exc:                     # 后端缺失 / 未打包时的兜底
         merged["error"] = f"PDF 渲染不可用：{type(exc).__name__}: {exc}"
     merged.pop("localPath", None)                # 内部路径不往 QML 递
+    merged.pop("ok", None)
     return merged
 
 
@@ -183,19 +184,17 @@ class PreviewProvider(QObject):
         # 第二阶段：后台 I/O，结果回主线程（runner.finished 是 QueuedConnection）
         self._pv = previewer
         self._entry = entry
-        self._pdf_rounds = 0
         self._password = self._known.get(str(vpath), "")
         self._job = self._backend._runner.submit(
-            "preview", _view_job, previewer, entry, gen, self._kind == "pdf",
-            self._password)
+            "preview", _view_job, previewer, entry, gen, self._password)
 
     @Slot(str)
     def unlock(self, password: str):
         """给加密 PDF 输密码后重开。
 
-        为什么不「就地 setPassword 再接着用」：QtPdf 只在 load() 时用一次密码，
+        为什么不「就地 setPassword 再接着用」：后端只在打开时用一次密码，
         load 失败后再设不会重试（状态永远停在 Error），所以整份重开一次。
-        有缓存时重开几乎瞬间完成，用户感知不到。
+        探测是毫秒级的，重开对用户是无感的。
         故意不切到 loading：留着密码框（按钮变「解锁中…」），密码错时不用重新敲。
         """
         if not self._open or self._kind != "pdf" or self._entry is None:
@@ -203,9 +202,8 @@ class PreviewProvider(QObject):
         self._password = password or ""
         self._gen += 1
         self._cancel_pending()
-        self._pdf_rounds = 0
         self._job = self._backend._runner.submit(
-            "preview", _view_job, self._pv, self._entry, self._gen, True, self._password)
+            "preview", _view_job, self._pv, self._entry, self._gen, self._password)
 
     @Slot()
     def close(self):
@@ -222,8 +220,8 @@ class PreviewProvider(QObject):
         self._state = "idle"
         self._pv = None
         self._entry = None
-        self._pdf_rounds = 0
         self._password = ""
+        self._release_pdf()
         self._set_open(False)
         self.specChanged.emit()
         self.payloadChanged.emit()
@@ -275,14 +273,14 @@ class PreviewProvider(QObject):
         self.payloadChanged.emit()
         self.stateChanged.emit()
 
-        # PDF 两段式：第一段只渲首屏一页，先把内容显示出来；这里接着排续渲。
-        # 不无条件递归 —— 最多补 3 轮（每轮 3s 预算），超大文档也不会一直占着
-        # preview 池，用户翻下一个文件时旧 job 会被 cancel + gen 校验挡住。
-        if self._kind == "pdf" and self._payload.get("pending") and self._pdf_rounds < 3:
-            self._pdf_rounds += 1
-            self._job = self._backend._runner.submit(
-                "preview", _view_job, self._pv, self._entry, self._gen, False,
-                self._password)
+    def _release_pdf(self):
+        """关预览时把页图 LRU 放掉（8GB 机器不养懒汉）。文档句柄留在
+        pdf_pages 的登记表里（最多 6 份），再打开同一份文件就不用重解析。"""
+        try:
+            import pdf_image_provider
+            pdf_image_provider.clear_cache()
+        except Exception:
+            pass
 
     def _remember_password(self, vpath: str, password: str):
         """记住本次会话里解锁成功的密码（最多 16 份，超了丢最早那条）。"""

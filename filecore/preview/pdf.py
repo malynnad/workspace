@@ -1,8 +1,9 @@
 """PDF 预览器：filecore 这半边只做零 Qt 的轻活 —— 校验文件头、判一下加密标记。
 
-真正的页面栅格化必须用 QPdfDocument（QtPdf），那是 Qt 类，不能出现在 filecore 里。
-所以这里只产出「要渲染什么」，由 preview_provider 的 _view_job 在工作线程里接上
-pdf_render.render_pdf() 把页图补进 payload —— 和数据层/协议层保持零 Qt 的边界。
+真正的页面栅格化要用 PyMuPDF / QPdfDocument，都有 Qt 或第三方依赖，不能出现在
+filecore 里。所以这里只产出「要渲染什么」，由 preview_provider 的 _view_job 在工作
+线程里接上 pdf_pages.probe() 拿到页数/页尺寸/token；页面位图再由 QML 的
+image://pdfpage/... 按需取（见 pdf_image_provider）—— 数据层保持零 Qt 的边界。
 """
 
 from __future__ import annotations
@@ -54,7 +55,7 @@ class PdfPreviewer:
 
         data["localPath"] = local
         # /Encrypt 在 trailer 里，位置不固定；这里只在头部 1KB 里做个廉价提示，
-        # 真正的判定交给 QPdfDocument（status / pageCount），见 pdf_render。
+        # 真正的判定交给渲染后端（见 pdf_pages.probe）。
         if b"/Encrypt" in head:
             data["encrypted"] = True
         return PreviewPayload("pdf", data)

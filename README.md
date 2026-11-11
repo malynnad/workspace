@@ -45,8 +45,8 @@ python3 -m venv .venv
 - 数据库：`~/.config/workspace/workspace.db`（阶段 1 schema：log_types / log_entries / todos / templates）
 - 脚本目录：`~/.config/workspace/scripts/`（已有示例 hello.py，扔 .py/.sh 进去就出现在面板）
 - 文件管理状态：`~/.config/workspace/filemanager_state.json`（cwd / 排序 / 隐藏开关 / 面板比例 / 收藏夹 / 预览窗几何，不动 workspace.db）。`leftWidth` 是 966 基准的归一化像素（比例 = leftWidth / 966），不是屏幕像素；`previewWindow` 的 `x/y` 允许负数（副屏在主屏左侧），`ver` 是预览窗几何版本（1→2 时旧的 760×580 记录自动作废、回到半屏默认）
-- PDF 页图缓存：`~/.cache/workspace/pdf/<sha1>/pNNN.png`（key = 路径+大小+mtime+渲染宽度，**不含密码**）。按 mtime 保留 7 天 / 最多 120 个目录，启动后第一次渲染时清一次；`WORKSPACE_CACHE_HOME` 可整体改目录（探针用它做隔离）
-- 加密 PDF：密码**只在内存里记本次会话**（vpath → 密码，最多 16 份，退出即失），不落盘；缓存已经在的文件不再问密码
+- PDF 页图**不落盘**：由 `image://pdfpage/<token>/<页>/<宽>` 在工作线程里现渲、现交给 QML，内存里只留最近 5~6 页（LRU 64MB）。旧版本渲成 PNG 写 `~/.cache/workspace/pdf/`，已废弃（PNG 编码比渲染慢 4~14 倍，就是「打开慢」的根因）
+- 加密 PDF：密码**只在内存里记本次会话**（vpath → 密码，最多 16 份，退出即失），不落盘；同一份文件再打开不再问密码
 - 测试隔离跑：`WORKSPACE_HOME=./testdata .venv/bin/python main.py`
 
 ## 模块现状
@@ -81,9 +81,10 @@ workspace/
       base.py                       prepare(<10ms 出窗口) / view(后台加载) + 注册表
       textread.py / probe.py        安全文本读取与编码探测 / 纯 Python 图片尺寸探测
       image.py / pdf.py / text.py / directory.py / fallback.py
-                                     PDF 只校验文件头，栅格化在 Qt 层（见 pdf_render.py）
+                                     PDF 只校验文件头，栅格化在 pdf_pages.py
     selfcheck.py                   python -m filecore.selfcheck
-  pdf_render.py    PDF 页栅格化（QtPdf → PNG 缓存 $XDG_CACHE_HOME/workspace/pdf）
+  pdf_pages.py     PDF 页栅格化（PyMuPDF 优先、QtPdf 兜底；只出 QImage，不写盘）
+  pdf_image_provider.py  QML 的 image://pdfpage —— 工作线程渲染 + 内存 LRU
   file_model.py    FileListModel（QAbstractListModel，10 个 role）
   task_runner.py   后台任务三池（M1a 只实例化 IO 池）
   preview_provider.py / file_bridge.py   预览门面 + 双面板后端
@@ -122,12 +123,26 @@ TMPDIR=$PWD/.tmp WORKSPACE_HOME=$PWD/.tmp/home QT_QPA_PLATFORM=offscreen \
 2. **验证拖动不能用一次大跳的合成事件**：`QTest.mouseMove` 走的是「显式局部坐标 + 显式全局
    坐标」，而真实硬件事件是投递时才把全局坐标换算成局部坐标。一次跳 60px 会被算成 120px，
    松手位置也会多算一次。要按真实事件流验证：每步小位移，局部坐标 = `虚拟光标 - 当前窗口位置`。
-3. **QPdfDocument 的密码只能在 `load()` 之前 `setPassword()`**：load 失败后再设不生效，
-   状态永远停在 `Error/IncorrectPassword`（改对了也不重试）。所以解锁 = 整份重开一次，
-   不能“就地改密码接着用”。另外「没给密码」和「密码错」报的是同一个 `IncorrectPassword`，
-   想区分只能看自己有没有给过密码。
+3. **PDF 密码必须在 `load()` 之前给**（QtPdf 是 `setPassword`，PyMuPDF 是 `authenticate`）：
+   加载失败后再设不重试，状态永远停在错误上。所以解锁 = 整份重开一次，不能“就地改密码接着用”。
+   QtPdf 对「没给密码」和「密码错」报同一个 `IncorrectPassword`，想区分只能看自己有没有给过密码。
+
+## PDF 渲染（换渲染器之前先读）
+
+- **默认渲染器是 PyMuPDF（`pymupdf`），QtPdf 只是兜底**。原因是 QtPdf 的注释渲染必须显式传
+  `QPdfDocumentRenderOptions.RenderFlag.Annotations`，而且**对 `/Widget`（数字签名字段）一律不画**
+  —— 电子合同/发票上的电子签章大量是这种形态，这就是「签章不显示」的根因。PyMuPDF 默认画注释，
+  `/Stamp` 与已签 `/Widget`（含图片型印章外观流）都能出来；未签的 `/Widget` 它会画一个自己的
+  「SIGN」占位，这是它的既定行为，不算 bug。
+- 想退回 QtPdf：`WORKSPACE_PDF_ENGINE=qtpdf`。代价就是 `/Widget` 签章看不见。
+- **不要在 Qt 之后再 `import pymupdf`**：实测 PySide6 6.12 已加载时这次 import 要 1170ms，
+  反过来只要 120ms。`main.py` 特意把它放在 PySide6 模块之前，就是为这 1 秒。
+- **PNG 编码是这条链路上最贵的一步**：一页扫描件渲染 34ms / PNG 编码 265ms，一页矢量文字
+  7ms / 120ms。所以现在的做法是直接交 `QImage`（`QQuickAsyncImageProvider`），不编码不落盘；
+  页面按「滚到哪渲到哪」按需渲染，打开文件时不做任何栅格化。
 
 ## 麒麟部署
 
-同一份源码 git 同步过去，麒麟上 `python3 -m venv .venv && pip install PySide6`
+同一份源码 git 同步过去，麒麟上 `python3 -m venv .venv && pip install -r requirements.txt`
+（含 PyMuPDF；aarch64 有官方 wheel。装不上也不影响启动，会自动退回 QtPdf，只是 `/Widget` 签章不显示）
 即可跑（无构建链）。会话用 X11。界面缩放默认 1.25，按 `WORKSPACE_SCALE` 现场调档。

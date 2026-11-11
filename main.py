@@ -36,6 +36,15 @@ def _ensure_pyside6():
 
 _ensure_pyside6()
 
+# PDF 渲染后端必须在 PySide6 的 QML/Quick 模块之前导入。
+# 实测（PySide6 6.12 / macOS）：Qt 先加载时 import pymupdf 要 1170ms，
+# 反过来只要 120ms —— 差的这 1 秒正好就是「第一次打开 PDF 顿一下」。
+# 这里只导入（~120ms），不初始化任何文档。
+try:
+    import pymupdf  # noqa: F401
+except ImportError:
+    pass          # 没装就由 pdf_pages 退回 QtPdf
+
 os.environ.setdefault("QT_QUICK_CONTROLS_STYLE", "Basic")
 
 # 界面缩放：QT_SCALE_FACTOR 是 Qt 逻辑像素的全局乘数，设了它字号/控件高/内边距/图标
@@ -75,7 +84,12 @@ def main():
     engine.rootContext().setContextProperty("backend", db)
     engine.rootContext().setContextProperty("scripts", runner)
     engine.rootContext().setContextProperty("files", files)
-    _KEEP_ALIVE.extend([db, runner, files])
+    # PDF 页图走 image://pdfpage/...（后台线程渲染后直接把 QImage 交给 QML）。
+    # 必须在 engine.load 之前注册；provider 也要自己持有引用，否则被 GC 掉就报
+    # "Invalid image provider"。
+    import pdf_image_provider
+    pdf_provider = pdf_image_provider.register(engine)
+    _KEEP_ALIVE.extend([db, runner, files, pdf_provider])
     app.aboutToQuit.connect(files.shutdown)
     app.aboutToQuit.connect(files.saveState)
     engine.addImportPath(str(ROOT / "qml"))
