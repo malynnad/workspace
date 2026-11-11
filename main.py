@@ -38,6 +38,17 @@ _ensure_pyside6()
 
 os.environ.setdefault("QT_QUICK_CONTROLS_STYLE", "Basic")
 
+# 界面缩放：QT_SCALE_FACTOR 是 Qt 逻辑像素的全局乘数，设了它字号/控件高/内边距/图标
+# 会一起等比放大，业务代码不用动。目标机 1920×1080 系统缩放 100%，11px 正文明细偏小，
+# 所以 Linux 默认放大 25%；Mac 保持原生 Retina 行为（DPR 已是 2.0，再放大反而过大）。
+# 必须在 QGuiApplication 构造之前设置，之后再改无效。
+# 现场调档：WORKSPACE_SCALE=1.15 .venv/bin/python main.py
+_UI_SCALE = os.environ.get("WORKSPACE_SCALE") or (
+    "1.25" if sys.platform.startswith("linux") else "1.0")
+os.environ.setdefault("QT_SCALE_FACTOR", _UI_SCALE)
+# 允许 1.25 这类非整数倍；策略是 Round 时会被取整成 1 或 2（Qt6 默认 PassThrough，显式声明防回归）
+os.environ.setdefault("QT_SCALE_FACTOR_ROUNDING_POLICY", "PassThrough")
+
 sys.path.insert(0, str(ROOT))
 
 from PySide6.QtCore import QTimer, QUrl
@@ -53,6 +64,8 @@ _KEEP_ALIVE = []
 
 
 def main():
+    print(f"[workspace] 界面缩放 {os.environ.get('QT_SCALE_FACTOR', '1')}"
+          f"（WORKSPACE_SCALE 可覆盖）", file=sys.stderr)
     app = QGuiApplication(sys.argv)
     engine = QQmlApplicationEngine()
 

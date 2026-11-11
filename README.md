@@ -18,6 +18,20 @@ Code Runner 都指向 `.venv`。
 `Cannot read property 'xxx' of null`（backend/scripts 两个上下文属性在 QML 里取到 null），
 页面数据全空，别升 3.14。
 
+## 界面缩放
+
+`QT_SCALE_FACTOR` 是 Qt 逻辑像素的全局乘数，设了它字号 / 控件高 / 内边距 / 图标一起等比放大，
+QML 代码不用改。**Linux 默认 1.25**（目标机 1920×1080 系统缩放 100% 下 11px 正文明细偏小），
+Mac 默认 1.0（Retina 的 DPR 已是 2.0，再放大反而过大）。
+
+```bash
+WORKSPACE_SCALE=1.15 .venv/bin/python main.py   # 觉得 1.25 偏大
+WORKSPACE_SCALE=1.0  .venv/bin/python main.py   # 还原
+```
+
+必须在 `QGuiApplication` 构造前设置，运行中改无效；启动会打印一行 `[workspace] 界面缩放 1.25`。
+副作用是渲染像素量按平方增长（1.25² ≈ 1.56 倍），软渲染下若滚动掉帧就退到 1.15。
+
 若在新机器：
 
 ```bash
@@ -97,4 +111,4 @@ TMPDIR=$PWD/.tmp WORKSPACE_HOME=$PWD/.tmp/home QT_QPA_PLATFORM=offscreen \
 ## 麒麟部署
 
 同一份源码 git 同步过去，麒麟上 `python3 -m venv .venv && pip install PySide6`
-即可跑（无构建链）。会话用 X11。
+即可跑（无构建链）。会话用 X11。界面缩放默认 1.25，按 `WORKSPACE_SCALE` 现场调档。

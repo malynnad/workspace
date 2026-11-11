@@ -23,7 +23,24 @@ Item {
     property var listModel: []
     property var entryModel: []
 
-    readonly property int cellW: 60              // 日历格子固定宽，避免宽度循环依赖
+    // ---------- 日历尺寸（由日历卡自身宽高反推，随窗口等比放大）----------
+    // 数据流必须单向：卡片宽高由 Layout 决定 → cellW → Grid 尺寸。
+    // 绝不能读 dayGrid.width 或 Grid.implicitWidth，那会让宽度绑定成环（曾把整列撑爆）。
+    readonly property int calPadX: 16
+    readonly property int calContentW: Math.max(0, calendarCard.width - calPadX * 2)
+    // 纵向预算 = 上下内边距 32 + 月份行 28 + 星期表头 22 + 底部统计 18 + 5 段间距 30。
+    // 星期表头必须用固定 22：若让它跟着 cellH 变，就会形成 cellH → 表头 → 预算 → cellH 的回路。
+    readonly property int calContentH: Math.max(0, calendarCard.height - 150)
+    readonly property int cellW: Math.max(60, Math.min(120,
+            Math.floor(calContentW / 7),
+            Math.floor((calContentH - 10) / 6 * 1.7)))
+    readonly property int cellH: Math.max(42, Math.min(96,
+            Math.floor((calContentH - 10) / 6)))
+    // 日期圆受格子高约束：宽屏下格子会被拉成长方形，只按 cellW 算会顶出格底
+    readonly property int bubble: Math.min(Math.round(cellW * 0.47),
+                                           Math.round(cellH * 0.65))        // 60x43 → 28
+    readonly property int dayFont: Math.round(cellW * 0.20)               // 60 → 12
+    readonly property int cntFont: Math.max(8, Math.round(cellW * 0.15))  // 60 → 9
 
     property int viewMode: 0                     // 0 = 日历  1 = 全部记录
 
@@ -254,6 +271,7 @@ Item {
                 spacing: Theme.pad
 
                 Card {
+                    id: calendarCard
                     objectName: "calendarCard"
                     Layout.fillWidth: true
                     Layout.fillHeight: true
@@ -324,7 +342,7 @@ Item {
                                 delegate: Item {
                                     id: dayCell
                                     width: root.cellW
-                                    height: 42
+                                    height: root.cellH
 
                                     readonly property bool inMonth: modelData ? modelData.inMonth : false
                                     readonly property int cnt: inMonth
@@ -340,9 +358,9 @@ Item {
 
                                     Rectangle {
                                         id: bubble
-                                        width: 28
-                                        height: 28
-                                        radius: 14
+                                        width: root.bubble
+                                        height: root.bubble
+                                        radius: root.bubble / 2
                                         anchors.horizontalCenter: parent.horizontalCenter
                                         y: 1
                                         // 今天：淡蓝底 + 蓝描边（不是实心，避开「选中」的蓝实心）
@@ -358,7 +376,7 @@ Item {
                                     Text {
                                         anchors.centerIn: bubble
                                         text: modelData ? modelData.day : ""
-                                        font.pixelSize: 12
+                                        font.pixelSize: root.dayFont
                                         color: dayCell.isSelected ? "white"
                                              : (dayCell.isToday ? Theme.accent
                                              : (dayCell.inMonth ? Theme.text : "#C3C8D4"))
@@ -369,9 +387,9 @@ Item {
                                     Text {
                                         visible: dayCell.cnt > 0
                                         anchors.horizontalCenter: parent.horizontalCenter
-                                        y: 29
+                                        y: root.bubble + 1
                                         text: dayCell.cnt > 99 ? "99+" : dayCell.cnt
-                                        font.pixelSize: 9
+                                        font.pixelSize: root.cntFont
                                         font.weight: Font.Medium
                                         color: dayCell.isSelected ? "white" : Theme.accent
                                         opacity: dayCell.isSelected ? 1.0 : 0.9
@@ -857,8 +875,10 @@ Item {
         var p = cell.mapToItem(root, 0, 0)
         var g = dayGrid.mapToItem(root, 0, 0)
         // 贴在 7 列网格右侧、纵向跟着行；右边放不下就翻到左侧
-        var estW = 88
-        var estH = 32
+        // 估算尺寸按格子缩放倍数走（60 → 88/32），与实际卡片高度保持一致
+        var k = root.cellW / 60
+        var estW = Math.round(88 * k)
+        var estH = Math.round(32 * k)
         var x = g.x + dayGrid.width + 10
         if (x + estW > root.width - 8)
             x = g.x - estW - 10
@@ -891,8 +911,8 @@ Item {
         enabled: false                      // 关键：完全不参与鼠标命中
         z: 930
         width: tipRow.implicitWidth + 20
-        height: 32
-        radius: 10
+        height: Math.round(32 * root.cellW / 60)
+        radius: Math.round(10 * root.cellW / 60)
         color: "#FFFFFF"
         border.width: 1
         border.color: "#E7E9F1"

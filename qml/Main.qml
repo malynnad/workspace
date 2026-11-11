@@ -1,14 +1,21 @@
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
+import QtQuick.Window
 
 ApplicationWindow {
     id: win
     visible: true
-    width: 1240
-    height: 780
-    minimumWidth: 1040
-    minimumHeight: 720
+    // 默认尺寸按屏幕可用区算：Screen.* 返回的已是折算过缩放因子的逻辑像素，
+    // 所以设了 QT_SCALE_FACTOR 也不会把窗口顶出屏幕。
+    // 用 desktopAvailable*（扣掉任务栏）；availableWidth/Height 在 Qt6 的附加类型里不存在。
+    readonly property int scrW: Screen.desktopAvailableWidth > 0 ? Screen.desktopAvailableWidth : 1920
+    readonly property int scrH: Screen.desktopAvailableHeight > 0 ? Screen.desktopAvailableHeight : 1080
+
+    width: Math.min(1400, Math.round(scrW * 0.86))
+    height: Math.min(900, Math.round(scrH * 0.88))
+    minimumWidth: Math.min(1040, scrW - 40)
+    minimumHeight: Math.min(720, scrH - 40)
     title: "Workspace"
     color: Theme.bg
 
