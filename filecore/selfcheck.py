@@ -299,6 +299,28 @@ def _favorites_state():
         assert state.save(cfg, old) is True
         back = state.load(cfg, home)
         assert back["favorites"] == [] and back["leftWidth"] == old["leftWidth"]
+        # 旧配置也没有 previewWindow：默认「没挪过」，交给 QML 定位
+        assert back["previewWindow"]["placed"] is False, back["previewWindow"]
+
+        # 预览窗几何：负坐标（副屏在左）必须原样保留，尺寸越界要夹紧
+        geo = state.default_state(home)
+        geo["previewWindow"] = {"ver": state.PREVIEW_GEOM_VERSION, "placed": True,
+                                "x": -1580, "y": 120, "w": 99999, "h": 10}
+        assert state.save(cfg, geo) is True
+        pg = state.load(cfg, home)["previewWindow"]
+        assert pg["placed"] is True and pg["x"] == -1580 and pg["y"] == 120, pg
+        assert pg["w"] == state.PREVIEW_MAX_W, pg
+        assert pg["h"] == state.PREVIEW_MIN_H, pg
+        # 半截数据（只给 placed 没有 x/y）不能认成「挪过」，否则窗口会掉到 0,0
+        broken = state._clean_preview_window({"ver": state.PREVIEW_GEOM_VERSION,
+                                              "placed": True})
+        assert broken["placed"] is False, broken
+        # 旧版（760×580 固定小窗，没有 ver）必须作废，回到半屏默认尺寸
+        legacy = state._clean_preview_window({"placed": True, "x": 640, "y": 200,
+                                              "w": 760, "h": 580})
+        assert legacy["placed"] is False, legacy
+        assert (legacy["w"], legacy["h"]) == (state.PREVIEW_DEFAULT_W,
+                                              state.PREVIEW_DEFAULT_H), legacy
 
         # 常用位置：结构固定、路径真实存在
         items = locations.standard_locations(os.path.expanduser("~"))
@@ -321,8 +343,8 @@ def _registry_and_preview():
         pass
     else:
         raise AssertionError("M2 之前 zip+file 应当未注册")
-    # M1b：四种内置预览器已注册，且按 priority 降序（兜底永远最后）
-    assert len(preview_base.REGISTRY) == 4, preview_base.REGISTRY
+    # M1b：五种内置预览器已注册，且按 priority 降序（兜底永远最后）
+    assert len(preview_base.REGISTRY) == 5, preview_base.REGISTRY
     prios = [p.priority for p in preview_base.REGISTRY]
     assert prios == sorted(prios, reverse=True), prios
     assert prios[-1] == 0
@@ -430,12 +452,30 @@ def _preview_pipeline():
         token.cancel()
         assert p.view(dir_entry, pb.PreviewContext(cancel=token)).data["count"] <= 1
 
-        # 其余类型一律兜底信息卡
+        # PDF：filecore 这半边只校验文件头 + 交出本地路径，栅格化在 Qt 层做
         e_pdf = entry_of("doc.pdf")
         p = pb.pick(e_pdf)
-        assert type(p).__name__ == "FallbackPreviewer"
+        assert type(p).__name__ == "PdfPreviewer"
+        spec = p.prepare(e_pdf)
+        assert spec.kind == "pdf" and spec.title == "doc.pdf"
         r = p.view(e_pdf, pb.PreviewContext())
-        assert r.kind == "fallback" and "M2" in r.data["hint"]
+        assert r.kind == "pdf" and not r.data["error"], r.data
+        assert r.data["localPath"] == os.path.join(tmp, "doc.pdf"), r.data
+        assert r.data["pages"] == [] and r.data["pageCount"] == 0
+        plain(r.data)
+
+        # 只改了后缀的假 PDF：必须被文件头拦下，不能交给 PDF 引擎
+        put("fake.pdf", b"hello, i am not a pdf\n")
+        r = pb.pick(entry_of("fake.pdf")).view(entry_of("fake.pdf"), pb.PreviewContext())
+        assert "文件头" in r.data["error"], r.data
+
+        # 其余类型一律兜底信息卡
+        put("plan.docx", b"not a real docx")
+        e_doc = entry_of("plan.docx")
+        p = pb.pick(e_doc)
+        assert type(p).__name__ == "FallbackPreviewer"
+        r = p.view(e_doc, pb.PreviewContext())
+        assert r.kind == "fallback" and "办公文档" in r.data["hint"]
         assert pb.pick(None).__class__.__name__ == "FallbackPreviewer"
 
         # 图片头探测的其它格式
@@ -474,7 +514,7 @@ def main() -> int:
         ("scan_dir 错误文案不抛异常", _scan_errors),
         ("state 读写 / 坏 JSON / 版本 / 路径回退", _state),
         ("等比布局数值 / 四档列宽契约", _layout_ratio),
-        ("收藏项往返 / 旧配置兼容 / 常用位置", _favorites_state),
+        ("收藏项往返 / 旧配置兼容 / 常用位置 / 预览窗几何", _favorites_state),
         ("FileSource 注册表 / 四种预览器注册", _registry_and_preview),
         ("预览两阶段协议 / 文本编码 / 图片头 / 目录摘要", _preview_pipeline),
         ("零 Qt 依赖", _zero_qt),

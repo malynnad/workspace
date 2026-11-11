@@ -16,14 +16,38 @@ from filecore.preview import base
 from filecore.sources import UnknownScheme, resolve
 
 
-def _view_job(previewer, entry, gen, cancel=None):
-    """工作线程：只调零 Qt 的 previewer.view，异常一律转成中文结果。"""
+def _view_job(previewer, entry, gen, first_only=False, password="", cancel=None):
+    """工作线程：只调零 Qt 的 previewer.view，异常一律转成中文结果。
+
+    PDF 是唯一需要「Qt 侧补一刀」的类型：解析/栅格化必须用 QPdfDocument，
+    而 filecore 里不能出现 Qt 类，所以在这里（仍在工作线程里）把页图补进 payload。
+    first_only=True 时只渲首屏一页，剩下的由调用方再排一次任务续渲。
+    password 只对加密 PDF 有用，其余类型忽略。
+    """
     try:
         payload = previewer.view(entry, base.PreviewContext(cancel=cancel))
-        return {"gen": gen, "kind": payload.kind,
-                "data": payload.data if isinstance(payload.data, dict) else {}}
+        data = payload.data if isinstance(payload.data, dict) else {}
+        if payload.kind == "pdf" and not data.get("error"):
+            data = _pdf_payload(data, cancel, first_only, password)
+        return {"gen": gen, "kind": payload.kind, "data": data}
     except Exception as exc:
         return {"gen": gen, "error": f"预览失败：{type(exc).__name__}: {exc}"}
+
+
+def _pdf_payload(data, cancel, first_only=False, password=""):
+    """把 PDF 页渲染成 PNG 缓存，回传纯数据（source/w/h/index）。"""
+    merged = dict(data)
+    local = merged.get("localPath") or ""
+    if not local:
+        return merged
+    try:
+        from pdf_render import render_pdf
+        merged.update(render_pdf(local, cancel=cancel, first_only=first_only,
+                                 password=password))
+    except Exception as exc:                     # QtPdf 缺失 / 未打包时的兜底
+        merged["error"] = f"PDF 渲染不可用：{type(exc).__name__}: {exc}"
+    merged.pop("localPath", None)                # 内部路径不往 QML 递
+    return merged
 
 
 class PreviewProvider(QObject):
@@ -51,6 +75,15 @@ class PreviewProvider(QObject):
         self._payload: dict = {}
         self._state = "idle"
         self._error = ""
+        self._pv = None            # 当前预览器 / entry：PDF 第二段续渲要用
+        self._entry = None
+        self._pdf_rounds = 0
+        self._password = ""        # 当前 PDF 的打开密码（换文件即清空）
+        # 本次会话里解锁过的 PDF：vpath -> 密码。作用有两个：
+        #   1. 反复打开同一份加密文件（逐个审核）不用一遍遍输密码；
+        #   2. 上次渲染只渲了一部分就关掉时，重开能接着渲完 —— 没有密码就没法续渲。
+        # 只存在内存里，关程序即失，不落盘。
+        self._known: dict[str, str] = {}
 
     # ---------------- Properties（QML 绑定） ----------------
     @Property(bool, notify=availableChanged)
@@ -148,8 +181,31 @@ class PreviewProvider(QObject):
         self.requestArrived.emit(vpath)
 
         # 第二阶段：后台 I/O，结果回主线程（runner.finished 是 QueuedConnection）
+        self._pv = previewer
+        self._entry = entry
+        self._pdf_rounds = 0
+        self._password = self._known.get(str(vpath), "")
         self._job = self._backend._runner.submit(
-            "preview", _view_job, previewer, entry, gen)
+            "preview", _view_job, previewer, entry, gen, self._kind == "pdf",
+            self._password)
+
+    @Slot(str)
+    def unlock(self, password: str):
+        """给加密 PDF 输密码后重开。
+
+        为什么不「就地 setPassword 再接着用」：QtPdf 只在 load() 时用一次密码，
+        load 失败后再设不会重试（状态永远停在 Error），所以整份重开一次。
+        有缓存时重开几乎瞬间完成，用户感知不到。
+        故意不切到 loading：留着密码框（按钮变「解锁中…」），密码错时不用重新敲。
+        """
+        if not self._open or self._kind != "pdf" or self._entry is None:
+            return
+        self._password = password or ""
+        self._gen += 1
+        self._cancel_pending()
+        self._pdf_rounds = 0
+        self._job = self._backend._runner.submit(
+            "preview", _view_job, self._pv, self._entry, self._gen, True, self._password)
 
     @Slot()
     def close(self):
@@ -164,6 +220,10 @@ class PreviewProvider(QObject):
         self._payload = {}
         self._error = ""
         self._state = "idle"
+        self._pv = None
+        self._entry = None
+        self._pdf_rounds = 0
+        self._password = ""
         self._set_open(False)
         self.specChanged.emit()
         self.payloadChanged.emit()
@@ -173,11 +233,17 @@ class PreviewProvider(QObject):
 
     @Slot(int)
     def step(self, delta):
-        """浮窗打开时按 ↑↓ 预览同目录里的相邻项（QuickLook 习惯）。"""
+        """预览窗里按 ↑↓ 切换同目录相邻项（QuickLook 习惯）。
+
+        同步把面板选中项挪过去：预览窗是独立窗口，用户在上面翻完一个再翻下一个，
+        主窗口列表就得跟着高亮，否则关掉预览后不知道看的是哪个文件。
+        """
         if not self._open or not self._cur:
             return
-        vp = self._backend.active().adjacentVpath(self._cur, int(delta))
+        panel = self._backend.active()
+        vp = panel.adjacentVpath(self._cur, int(delta))
         if vp and vp != self._cur:      # 到列表边界时别重复加载同一个文件
+            panel.select(vp, "single")
             self.request(vp)
 
     @Slot(result=int)
@@ -202,9 +268,28 @@ class PreviewProvider(QObject):
         self._kind = str(result.get("kind") or self._kind)
         self._error = ""
         self._state = "ready"
+        if (self._kind == "pdf" and self._password and self._cur
+                and not self._payload.get("needsPassword")):
+            self._remember_password(self._cur, self._password)
         self.specChanged.emit()
         self.payloadChanged.emit()
         self.stateChanged.emit()
+
+        # PDF 两段式：第一段只渲首屏一页，先把内容显示出来；这里接着排续渲。
+        # 不无条件递归 —— 最多补 3 轮（每轮 3s 预算），超大文档也不会一直占着
+        # preview 池，用户翻下一个文件时旧 job 会被 cancel + gen 校验挡住。
+        if self._kind == "pdf" and self._payload.get("pending") and self._pdf_rounds < 3:
+            self._pdf_rounds += 1
+            self._job = self._backend._runner.submit(
+                "preview", _view_job, self._pv, self._entry, self._gen, False,
+                self._password)
+
+    def _remember_password(self, vpath: str, password: str):
+        """记住本次会话里解锁成功的密码（最多 16 份，超了丢最早那条）。"""
+        self._known.pop(vpath, None)
+        self._known[vpath] = password
+        while len(self._known) > 16:
+            self._known.pop(next(iter(self._known)))
 
     def _fail(self, message):
         self._gen += 1

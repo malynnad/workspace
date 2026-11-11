@@ -26,6 +26,47 @@ PANEL_MIN_WIDTH = 180             # QML Layout.minimumWidth 的配套值
 
 _PANEL_KEYS = ("cwd", "sortColumn", "sortDesc", "showHidden", "history", "histPos")
 
+# 预览窗（独立无边框窗口）的几何。x/y 允许负数：多屏时副屏在主屏左侧是常态，
+# 这里绝不能按「>=0」清洗，否则副屏上的位置每次重启都会被吞掉。
+# 默认尺寸 = 屏幕右半边（1920×1080 → 960×972）；实际首帧尺寸由 QML 按当前屏幕算，
+# 这里的常量只用于「从没打开过」时的回退值与脏数据兜底。
+PREVIEW_DEFAULT_W = 960
+PREVIEW_DEFAULT_H = 972
+PREVIEW_MIN_W = 520
+PREVIEW_MIN_H = 420
+PREVIEW_MAX_W = 3200
+PREVIEW_MAX_H = 2400
+# 几何版本：1 = 老的固定小窗（760×580、不可缩放）。升级到「半屏 + 可缩放」后，
+# 旧记录里的尺寸已经不代表用户意图，读到没有 ver 的记录一律作废、按新默认重新定位。
+PREVIEW_GEOM_VERSION = 2
+_COORD_LIMIT = 30000
+
+
+def _clean_preview_window(raw) -> dict:
+    """预览窗几何逐项回退。placed=False 表示用户从没挪过，由 QML 决定初始位置。"""
+    out = {"placed": False, "x": 0, "y": 0,
+           "w": PREVIEW_DEFAULT_W, "h": PREVIEW_DEFAULT_H,
+           "ver": PREVIEW_GEOM_VERSION}
+    if not isinstance(raw, dict):
+        return out
+    if raw.get("ver") != PREVIEW_GEOM_VERSION:
+        return out          # 旧版几何：整体作废，交给 QML 重新算半屏
+    for key in ("x", "y"):
+        try:
+            out[key] = max(-_COORD_LIMIT, min(_COORD_LIMIT, int(raw.get(key))))
+        except (TypeError, ValueError):
+            out[key] = 0
+    for key, lo, hi, dflt in (("w", PREVIEW_MIN_W, PREVIEW_MAX_W, PREVIEW_DEFAULT_W),
+                              ("h", PREVIEW_MIN_H, PREVIEW_MAX_H, PREVIEW_DEFAULT_H)):
+        try:
+            out[key] = max(lo, min(hi, int(raw.get(key))))
+        except (TypeError, ValueError):
+            out[key] = dflt
+    # 只有四个坐标都像样才认「挪过」，避免半截数据把窗口丢到 0,0
+    out["placed"] = bool(raw.get("placed")) and isinstance(raw.get("x"), (int, float)) \
+        and isinstance(raw.get("y"), (int, float))
+    return out
+
 
 def _clean_favorites(raw) -> list[str]:
     """收藏项逐项回退：只收合法 vpath 字符串、去重、拒绝未知 scheme。
@@ -76,6 +117,7 @@ def default_state(home: str) -> dict:
         "activeSide": "left",
         "leftWidth": DEFAULT_LEFT_WIDTH,
         "favorites": [],
+        "previewWindow": _clean_preview_window(None),
         "panels": {"left": dict(panel), "right": dict(panel)},
     }
 
@@ -110,6 +152,7 @@ def load(path, home: str) -> dict:
         out["activeSide"] = data["activeSide"]
     out["leftWidth"] = clamp_width(data.get("leftWidth", DEFAULT_LEFT_WIDTH))
     out["favorites"] = _clean_favorites(data.get("favorites"))
+    out["previewWindow"] = _clean_preview_window(data.get("previewWindow"))
 
     panels = data.get("panels")
     if not isinstance(panels, dict):

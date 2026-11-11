@@ -463,6 +463,7 @@ class FileManagerBackend(QObject):
     progressChanged = Signal()
     toast = Signal(str)
     favoritesChanged = Signal()
+    previewWindowChanged = Signal()
 
     def __init__(self, app_home, parent=None):
         super().__init__(parent)
@@ -475,6 +476,7 @@ class FileManagerBackend(QObject):
         self._active_side = "left"
         self._left_width = state.DEFAULT_LEFT_WIDTH
         self._favorites: list[str] = []          # 存 vpath，不是绝对路径
+        self._preview_window = state._clean_preview_window(None)
         self._local_source = LocalSource()
         self._busy = False
         self._progress = 0
@@ -551,6 +553,11 @@ class FileManagerBackend(QObject):
     def progress(self):
         return self._progress
 
+    @Property("QVariantMap", notify=previewWindowChanged)
+    def previewWindow(self):
+        """预览窗上次的位置/尺寸。placed=False 时由 QML 按主窗口右侧算初始位置。"""
+        return dict(self._preview_window)
+
     # ---------------- Slots ----------------
     @Slot(str)
     def setActiveSide(self, side):
@@ -613,6 +620,19 @@ class FileManagerBackend(QObject):
             self.leftWidthChanged.emit()
             self._schedule_save()
 
+    # ---------------- Slots：预览窗几何（独立窗口，可拖出主窗口） ----------------
+    @Slot(int, int, int, int)
+    def savePreviewWindow(self, x, y, w, h):
+        """QML 在拖动结束 / 关闭时回写。写盘走 400ms 防抖，拖动过程中不会疯狂落盘。"""
+        new = state._clean_preview_window({
+            "ver": state.PREVIEW_GEOM_VERSION,
+            "placed": True, "x": x, "y": y, "w": w, "h": h})
+        if new == self._preview_window:
+            return
+        self._preview_window = new
+        self.previewWindowChanged.emit()
+        self._schedule_save()
+
     @Slot()
     def shutdown(self):
         """退出前排干后台扫描与预览，避免工作线程在对象销毁后继续发信号。"""
@@ -638,6 +658,7 @@ class FileManagerBackend(QObject):
             "activeSide": self._active_side,
             "leftWidth": self._left_width,
             "favorites": list(self._favorites),
+            "previewWindow": dict(self._preview_window),
             "panels": panels,
         })
 
@@ -647,6 +668,8 @@ class FileManagerBackend(QObject):
         self._active_side = data.get("activeSide", "left")
         self._left_width = state.clamp_width(data.get("leftWidth"))
         self._favorites = list(data.get("favorites", []))
+        self._preview_window = dict(data.get("previewWindow")
+                                    or state._clean_preview_window(None))
         for side in ("left", "right"):
             cfg = data["panels"][side]
             cwd_value = state.validate(cfg["cwd"], HOME, self._local_source)

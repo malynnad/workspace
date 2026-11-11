@@ -164,9 +164,10 @@ Item {
         function onToast(msg) { Toast.show(msg) }
     }
 
-    // ---- M1b 浮窗预览 ----
-    // PreviewWindow 实例挂在 Main.qml 窗口级（遮罩覆盖整个窗口，含侧栏），
-    // 这里只负责开关联动、关闭后把焦点还给列表、以及下面的 4 个预览快捷键。
+    // ---- M1b 预览 ----
+    // PreviewWindow 是 Main.qml 里的独立窗口（可拖出主窗口、始终置顶），
+    // 这里只负责开关联动、关闭后把焦点还给列表、以及主窗口侧的 4 个预览快捷键
+    // （预览窗自己也有同套快捷键，靠 WindowShortcut context 各管各的）。
     Connections {
         target: files.preview
         function onClosed() { root.activeFm().focusList() }
@@ -221,7 +222,10 @@ Item {
         onActivated: files.toggleActiveSide()
     }
 
-    // ---------------- 预览浮窗专用快捷键（窗口级，优先于列表的 Keys） ----------------
+    // ---------------- 预览窗关闭快捷键（主窗口侧） ----------------
+    // 预览窗是独立窗口，↑↓ 归它自己管（Keys 处理）。主窗口这里只保留「关掉」两个字：
+    // 预览还开着、用户点回主窗口按 Esc/空格能关掉；而 ↑↓ 留在列表里做选区移动。
+    // 早先这里也绑了 ↑↓，结果预览窗和主窗口同时响应，一次按键跳两项。
     Shortcut {
         sequence: "Esc"
         enabled: root.previewKeysOk
@@ -231,15 +235,5 @@ Item {
         sequence: "Space"
         enabled: root.previewKeysOk
         onActivated: files.preview.close()
-    }
-    Shortcut {
-        sequence: "Up"
-        enabled: root.previewKeysOk
-        onActivated: files.preview.step(-1)
-    }
-    Shortcut {
-        sequence: "Down"
-        enabled: root.previewKeysOk
-        onActivated: files.preview.step(1)
     }
 }

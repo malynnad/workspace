@@ -83,11 +83,21 @@ ApplicationWindow {
         }
     }
 
-    // M1b 文件预览浮窗：挂在窗口级，遮罩覆盖整个窗口（含侧栏），
-    // 快捷键与开关仍由 FileManagerPage 管理。z 低于 Toast。
+    // M1b 预览：独立无边框窗口（可拖出主窗口、始终置顶），
+    // 不再挂在窗口里当浮层。mainWindow 只用来算初始位置。
     PreviewWindow {
-        z: 800
+        mainWindow: win
     }
+
+    // 关掉预览后把焦点还给主窗口，接着操作列表（逐个审核时高频动作）
+    Connections {
+        target: files.preview
+        function onClosed() {
+            win.requestActivate()
+        }
+    }
+
+    onClosing: files.preview.close()
 
     // 全局轻提示（顶部居中）
     ToastHost {

@@ -5,7 +5,7 @@ from __future__ import annotations
 from .base import PreviewPayload, PreviewSpec, common_meta
 
 HINTS = {
-    "pdf": "PDF 预览将在 M2 加入",
+    "pdf": "这份 PDF 无法预览（压缩包内的 PDF 尚未接入）",
     "archive": "压缩包内容预览将在 M2 加入",
     "office": "办公文档预览暂未接入",
     "video": "视频预览暂未接入",
