@@ -146,3 +146,4 @@ TMPDIR=$PWD/.tmp WORKSPACE_HOME=$PWD/.tmp/home QT_QPA_PLATFORM=offscreen \
 同一份源码 git 同步过去，麒麟上 `python3 -m venv .venv && pip install -r requirements.txt`
 （含 PyMuPDF；aarch64 有官方 wheel。装不上也不影响启动，会自动退回 QtPdf，只是 `/Widget` 签章不显示）
 即可跑（无构建链）。会话用 X11。界面缩放默认 1.25，按 `WORKSPACE_SCALE` 现场调档。
+#111
