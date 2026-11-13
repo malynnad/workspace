@@ -32,15 +32,19 @@ Item {
     readonly property string activeVpath:
         files.activeSide === "left" ? files.left.cwd : files.right.cwd
 
+    property bool settingsOpen: false        // 由 Main.qml 传入：设置面板是否展开
+
     readonly property bool pageActive: StackLayout.isCurrentItem
     // 预览浮窗打开时，浏览用的 9 个快捷键全部让位给下面 4 个预览快捷键。
+    // 设置面板展开时同理全让位：那会儿按键属于面板（Esc 收面板、时间框吃字符）。
     readonly property bool shortcutOk: root.pageActive && !files.preview.open &&
+        !root.settingsOpen &&
         !leftPanel.addressFocused && !leftPanel.filterFocused &&
         !rightPanel.addressFocused && !rightPanel.filterFocused
     // 预览窗自己激活时不能让路：Qt 的 Shortcut 不是严格 per-active-window，
     // 预览窗激活时这条也会跟着激活，导致「面板刚关、窗口也被关了」。
     readonly property bool previewKeysOk: root.pageActive && files.preview.open &&
-        !files.previewActive
+        !files.previewActive && !root.settingsOpen
 
     function activePanel() { return files.activeSide === "left" ? files.left : files.right }
     function activeFm() { return files.activeSide === "left" ? leftPanel : rightPanel }
@@ -202,7 +206,9 @@ Item {
     Shortcut {
         sequence: "Ctrl+H"
         enabled: root.shortcutOk
-        onActivated: root.activePanel().toggleHidden()
+        // 显示隐藏文件已改成全局开关（设置面板里唯一一处），所以这里也走全局，
+        // 不再只翻当前面板 —— 否则会造出「快捷键改了左栏、设置里还是旧值」的矛盾。
+        onActivated: files.toggleHidden()
     }
     Shortcut {
         sequence: "Ctrl+L"

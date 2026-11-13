@@ -60,9 +60,56 @@ ApplicationWindow {
 
                 Item { Layout.fillHeight: true }
 
+                // ---------- 设置入口（全应用唯一一个） ----------
+                // 放侧栏底部：桌面软件的通行位置（VS Code / Figma / Slack 都在左下角），
+                // 也不占任何页面自己的工具栏。所有模块的设置项都进这一个面板 ——
+                // 文件浏览的隐藏文件、顶栏的工作时段、预览的清晰度，读写的都是 files
+                // 上的同一份状态，不存在「两个地方各存一份」。
+                Item {
+                    id: settingsBtn
+                    objectName: "settingsButton"
+                    Layout.fillWidth: true
+                    Layout.preferredHeight: 36
+
+                    Rectangle {
+                        anchors.fill: parent
+                        radius: 9
+                        color: settingsPanel.visible ? Theme.accentSoft
+                               : (settingsMouse.containsMouse ? "#F5F6FA" : "transparent")
+                    }
+                    Row {
+                        anchors.verticalCenter: parent.verticalCenter
+                        anchors.left: parent.left
+                        anchors.leftMargin: 11
+                        spacing: 9
+                        Icon {
+                            width: 15
+                            height: 15
+                            name: "gear"
+                            anchors.verticalCenter: parent.verticalCenter
+                            color: settingsPanel.visible ? Theme.accent : Theme.textMuted
+                        }
+                        Text {
+                            text: "设置"
+                            font.pixelSize: 13
+                            anchors.verticalCenter: parent.verticalCenter
+                            color: settingsPanel.visible ? Theme.accent : Theme.text
+                            font.weight: settingsPanel.visible ? Font.DemiBold : Font.Normal
+                        }
+                    }
+                    MouseArea {
+                        id: settingsMouse
+                        anchors.fill: parent
+                        hoverEnabled: true
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: settingsPanel.toggleAtItem(settingsBtn)
+                    }
+                }
+
                 Text {
                     Layout.leftMargin: 10
                     Layout.bottomMargin: 6
+                    Layout.topMargin: 4
                     text: "个人工作台 · v0.1"
                     color: Theme.textMuted
                     font.pixelSize: 11
@@ -79,8 +126,25 @@ ApplicationWindow {
             LogPage {}
             TodoPage {}
             ScriptsPage {}
-            FileManagerPage {}
+            FileManagerPage {
+                // 设置面板开着时，页面自己的快捷键要让路（Esc、F5、Tab…）
+                settingsOpen: settingsPanel.visible
+            }
         }
+    }
+
+    // 全局设置面板：铺满窗口，锚在左下角齿轮上往右上弹
+    SettingsPanel {
+        id: settingsPanel
+        anchors.fill: parent
+    }
+
+    // Esc 关面板。要排除预览窗激活的时刻：Qt 的 Shortcut 不是严格按活动窗口隔离的，
+    // 预览窗激活时这条照样会响应，会把用户在主窗口里的面板莫名关掉。
+    Shortcut {
+        sequence: "Escape"
+        enabled: settingsPanel.visible && !files.previewActive
+        onActivated: settingsPanel.close()
     }
 
     // M1b 预览：独立无边框窗口（可拖出主窗口、始终置顶），

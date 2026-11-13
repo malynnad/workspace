@@ -41,14 +41,84 @@ PREVIEW_MAX_H = 2400
 PREVIEW_GEOM_VERSION = 2
 _COORD_LIMIT = 30000
 
-# 预览偏好：PDF 清晰度倍率（超采样倍数）。
-#   1.0 = 按屏幕物理像素 1:1 渲染，最省内存；
-#   1.5 = 渲 1.5 倍再缩回显示，字边更实，像素量 2.25 倍（默认，实测仍然够快）；
-#   2.0 = 极高，单页内存约 4 倍。
-# 只影响 PDF 页图，与 QT_SCALE_FACTOR 的界面缩放无关。必须是白名单档位：
-# 手改 JSON 写成 1.34 这种值面板里没有对应项，回退默认。
-PDF_QUALITY_CHOICES = (1.0, 1.5, 2.0)
-PDF_QUALITY_DEFAULT = 1.5
+# 预览偏好：清晰度倍率（超采样倍数），图片与 PDF 各一组。
+#   1.0 = 按屏幕物理像素 1:1 解码 / 渲染，最省内存；
+#   1.5 = 按 1.5 倍做再缩回显示，边缘更实，像素量 2.25 倍；
+#   2.0 = 极高，像素量 4 倍（8GB 机器上大图慎用）。
+# 与 QT_SCALE_FACTOR 的界面缩放无关。必须是白名单档位：手改 JSON 写成 1.34 这种值
+# 面板里没有对应项，回退默认。
+QUALITY_CHOICES = (1.0, 1.5, 2.0)
+PDF_QUALITY_CHOICES = QUALITY_CHOICES       # 旧名保留，语义相同
+PDF_QUALITY_DEFAULT = 1.5                   # 默认就超采样，字边明显更实
+IMAGE_QUALITY_DEFAULT = 1.0                 # 图片 1:1 已经等于显示像素，默认不额外烧内存
+
+# 工作时段（顶栏时钟的「还有多久下班」用）。存成「当天第几分钟」，0~1439，
+# 比存 "18:00" 字符串好清洗，也省掉 QML 侧反复解析。
+# Clock.qml 里原来硬编码 12:00 / 18:00，现在挪进设置面板。
+WORK_START_DEFAULT = 12 * 60                # 12:00 上午班结束
+WORK_END_DEFAULT = 18 * 60                  # 18:00 下班
+_DAY_MIN = 24 * 60
+
+
+def parse_hhmm(text, fallback: int) -> int:
+    """把 "9:00" / "09:00" / "900" 解析成当天第几分钟，非法返回 fallback。
+
+    宽松但明确：只认 1~2 位小时 + 0~2 位分钟，拒绝 24:00 以上。
+    设置面板里手输，因此不能因为多打一个空格就静默吞掉用户改的值。
+    """
+    if isinstance(text, (int, float)):
+        value = int(text)
+        if 0 <= value < _DAY_MIN:
+            return value
+        return fallback
+    if not isinstance(text, str):
+        return fallback
+    s = text.strip().replace("：", ":").replace("点", ":")
+    if not s:
+        return fallback
+    if ":" in s:
+        head, _, tail = s.partition(":")
+        head, tail = head.strip(), tail.strip()
+        if not head.isdigit():
+            return fallback
+        minutes = int(tail) if tail.isdigit() else 0
+        if tail and not tail.isdigit():
+            return fallback
+    else:
+        if not s.isdigit():
+            return fallback
+        if len(s) <= 2:
+            head, minutes = s, 0
+        elif len(s) in (3, 4):
+            head, minutes = s[:-2], int(s[-2:])
+        else:
+            return fallback
+    hour = int(head)
+    if not (0 <= hour < 24) or not (0 <= minutes < 60):
+        return fallback
+    return hour * 60 + minutes
+
+
+def format_hhmm(minute: int) -> str:
+    minute = max(0, min(_DAY_MIN - 1, int(minute)))
+    return "%02d:%02d" % (minute // 60, minute % 60)
+
+
+def _clean_work(raw) -> dict:
+    """工作时段：两项各自清洗，并要求 start < end —— 否则倒计时会算出负数。"""
+    out = {"startMin": WORK_START_DEFAULT, "endMin": WORK_END_DEFAULT}
+    if not isinstance(raw, dict):
+        return out
+    for key, dflt in (("startMin", WORK_START_DEFAULT), ("endMin", WORK_END_DEFAULT)):
+        try:
+            v = int(raw.get(key))
+        except (TypeError, ValueError):
+            continue
+        if 0 <= v < _DAY_MIN:
+            out[key] = v
+    if out["startMin"] >= out["endMin"]:
+        return {"startMin": WORK_START_DEFAULT, "endMin": WORK_END_DEFAULT}
+    return out
 
 
 def _clean_preview_window(raw) -> dict:
@@ -78,19 +148,30 @@ def _clean_preview_window(raw) -> dict:
 
 
 def _clean_preview_prefs(raw) -> dict:
-    """预览偏好逐项回退。目前只有一项：PDF 清晰度倍率。"""
-    out = {"pdfQuality": PDF_QUALITY_DEFAULT}
+    """预览偏好逐项回退：图片 / PDF 清晰度倍率，各自独立，非法值回默认档。"""
+    out = {"pdfQuality": PDF_QUALITY_DEFAULT,
+           "imageQuality": IMAGE_QUALITY_DEFAULT}
     if not isinstance(raw, dict):
         return out
-    try:
-        q = float(raw.get("pdfQuality"))
-    except (TypeError, ValueError):
-        return out
-    for choice in PDF_QUALITY_CHOICES:
-        if abs(q - choice) < 1e-6:
-            out["pdfQuality"] = choice
-            break
+    for key in ("pdfQuality", "imageQuality"):
+        try:
+            q = float(raw.get(key))
+        except (TypeError, ValueError):
+            continue
+        for choice in QUALITY_CHOICES:
+            if abs(q - choice) < 1e-6:
+                out[key] = choice
+                break
     return out
+
+
+def _clean_flag(raw, default: bool = False) -> bool:
+    """布尔开关只认真正的 bool：手改 JSON 写成 1 / "true" / null 一律回退默认。
+
+    不做 truthy 转换，是因为 "false" 字符串在 Python 里是真值 —— 那种静默翻转
+    比直接回退更让人迷惑。
+    """
+    return raw if isinstance(raw, bool) else default
 
 
 def _clean_favorites(raw) -> list[str]:
@@ -141,9 +222,13 @@ def default_state(home: str) -> dict:
         "version": VERSION,
         "activeSide": "left",
         "leftWidth": DEFAULT_LEFT_WIDTH,
+        # 全局开关（设置面板里的「显示隐藏文件」）。老版本按面板各存一份，
+        # 见 load() 里的迁移。
+        "showHidden": False,
         "favorites": [],
         "previewWindow": _clean_preview_window(None),
         "previewPrefs": _clean_preview_prefs(None),
+        "workSchedule": _clean_work(None),
         "panels": {"left": dict(panel), "right": dict(panel)},
     }
 
@@ -180,8 +265,23 @@ def load(path, home: str) -> dict:
     out["favorites"] = _clean_favorites(data.get("favorites"))
     out["previewWindow"] = _clean_preview_window(data.get("previewWindow"))
     out["previewPrefs"] = _clean_preview_prefs(data.get("previewPrefs"))
+    out["workSchedule"] = _clean_work(data.get("workSchedule"))
 
     panels = data.get("panels")
+
+    # 显示隐藏文件：顶层是唯一真源。老文件没有顶层字段，就从两个面板的遗留值
+    # 迁移过来（任一为开即开 —— 宁可多显示，也别静默藏起用户本来打开过的东西）。
+    legacy_hidden = False
+    if isinstance(panels, dict):
+        for side in ("left", "right"):
+            src = panels.get(side)
+            if isinstance(src, dict) and _clean_flag(src.get("showHidden")):
+                legacy_hidden = True
+    if "showHidden" in data:
+        out["showHidden"] = _clean_flag(data["showHidden"])
+    else:
+        out["showHidden"] = legacy_hidden
+
     if not isinstance(panels, dict):
         return out
     for side in ("left", "right"):
@@ -199,7 +299,8 @@ def load(path, home: str) -> dict:
         if dst["sortColumn"] not in (0, 1, 2, 3):
             dst["sortColumn"] = 0
         dst["sortDesc"] = bool(dst["sortDesc"])
-        dst["showHidden"] = bool(dst["showHidden"])
+        # 面板里这份只是兼容旧版本的落盘副本，读的时候一律以全局值为准
+        dst["showHidden"] = out["showHidden"]
         if not isinstance(dst["history"], list):
             dst["history"] = [dst["cwd"]]
         dst["history"] = [str(x) for x in dst["history"] if isinstance(x, str)][:100]

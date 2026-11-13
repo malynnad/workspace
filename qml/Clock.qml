@@ -3,7 +3,8 @@ import QtQuick.Controls
 import QtQuick.Layouts
 
 // 顶栏时钟：显示当前时间（HH:mm），悬停弹出「还有多久下班」气泡卡。
-// 下班节点固定两段：上午班到 12:00、下午班到 18:00。
+// 两段下班节点（上午结束 / 下午结束）来自统一设置面板，读 files.workSchedule
+// （后端存的是「当天第几分钟」，这里拿到的还有格式化好的 HH:MM 文本）。
 Item {
     id: root
     objectName: "clock"
@@ -11,9 +12,20 @@ Item {
     // 用 Timer 驱动，避免每秒重建绑定
     property var time: new Date()
 
+    function scheduleMin(key, fallback) {
+        var d = (typeof files !== "undefined" && files) ? files.workSchedule : null
+        if (d && typeof d[key] === "number" && d[key] >= 0)
+            return d[key]
+        return fallback
+    }
+    function scheduleText(key, fallback) {
+        var d = (typeof files !== "undefined" && files) ? files.workSchedule : null
+        return (d && d[key]) ? d[key] : fallback
+    }
+
     readonly property int nowMin: time.getHours() * 60 + time.getMinutes()
-    readonly property int noonMin: 12 * 60
-    readonly property int offMin: 18 * 60
+    readonly property int noonMin: scheduleMin("startMin", 12 * 60)
+    readonly property int offMin: scheduleMin("endMin", 18 * 60)
     readonly property bool beforeNoon: nowMin < noonMin
     readonly property bool afterWork: nowMin >= offMin
     readonly property int leftMin: afterWork ? 0
@@ -32,7 +44,9 @@ Item {
         return m === 0 ? h + " 小时" : h + " 小时 " + m + " 分"
     }
     readonly property string tipSub: afterWork ? "早点休息，明天见"
-                                   : (beforeNoon ? "上午班 12:00 结束" : "下午班 18:00 收工")
+                                   : (beforeNoon
+                                      ? "上午班 " + scheduleText("startText", "12:00") + " 结束"
+                                      : "下午班 " + scheduleText("endText", "18:00") + " 收工")
 
     function pad2(n) {
         return n < 10 ? "0" + n : "" + n

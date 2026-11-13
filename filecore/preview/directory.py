@@ -34,7 +34,7 @@ class DirectoryPreviewer:
             "fileCount": len(files),
             "totalText": human_size(sum(e.size for e in files)),
             "kinds": [{"label": kind_label(k), "count": n} for k, n in top],
-            "items": [{"name": e.name, "sizeText": e.size_text,
+            "items": [{"name": e.name, "sizeText": e.size_text, "kind": e.kind,
                        "kindLabel": kind_label(e.kind), "isDir": e.is_dir}
                       for e in ordered],
             "error": err or "",

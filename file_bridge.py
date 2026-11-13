@@ -228,17 +228,21 @@ class FilePanel(QObject):
 
     @Slot(bool)
     def setShowHidden(self, value):
+        """兼容旧调用：面板不再是这份状态的拥有者，一律转给后端。"""
+        self._backend.setShowHidden(value)
+
+    @Slot()
+    def toggleHidden(self):
+        self._backend.toggleHidden()
+
+    def apply_hidden(self, value):
+        """由 Backend 统一下发：改值 + 通知 + 重扫，不落盘（后端会统一存）。"""
         value = bool(value)
         if value == self._show_hidden:
             return
         self._show_hidden = value
         self.hiddenChanged.emit()
-        self._backend._schedule_save()
         self._scan()
-
-    @Slot()
-    def toggleHidden(self):
-        self.setShowHidden(not self._show_hidden)
 
     # ---------------- Slots：选中与激活 ----------------
     @Slot(str, str)
@@ -466,6 +470,8 @@ class FileManagerBackend(QObject):
     previewWindowChanged = Signal()
     previewPrefsChanged = Signal()
     previewActiveChanged = Signal()
+    showHiddenChanged = Signal()
+    workScheduleChanged = Signal()
 
     def __init__(self, app_home, parent=None):
         super().__init__(parent)
@@ -481,6 +487,10 @@ class FileManagerBackend(QObject):
         self._preview_window = state._clean_preview_window(None)
         self._preview_prefs = state._clean_preview_prefs(None)
         self._preview_active = False
+        # 显示隐藏文件是全局开关（设置面板里只有一处），左右面板同步生效。
+        # 之前是每个面板各存一份，工具栏上两个「隐藏: 开/关」按钮，语义上说不通。
+        self._show_hidden = False
+        self._work_schedule = state._clean_work(None)
         self._local_source = LocalSource()
         self._busy = False
         self._progress = 0
@@ -556,6 +566,23 @@ class FileManagerBackend(QObject):
     @Property(int, notify=progressChanged)
     def progress(self):
         return self._progress
+
+    @Property(bool, notify=showHiddenChanged)
+    def showHidden(self):
+        """是否显示点开头的隐藏文件。全局一份，左右面板同步。"""
+        return self._show_hidden
+
+    @Property("QVariantMap", notify=workScheduleChanged)
+    def workSchedule(self):
+        """工作时段：{"startMin": 720, "endMin": 1080} 加两段显示文本。
+
+        存「当天第几分钟」而不是 "18:00"：清洗简单，QML 侧不用反复解析。
+        文本由后端格式化，避免 QML 里再写一份补零逻辑。
+        """
+        d = dict(self._work_schedule)
+        d["startText"] = state.format_hhmm(d["startMin"])
+        d["endText"] = state.format_hhmm(d["endMin"])
+        return d
 
     @Property("QVariantMap", notify=previewWindowChanged)
     def previewWindow(self):
@@ -650,11 +677,67 @@ class FileManagerBackend(QObject):
         self._schedule_save()
 
     @Slot(bool)
+    def setShowHidden(self, value):
+        """全局「显示隐藏文件」。左右面板一起重扫，状态只存一份。
+
+        以前是每个面板各存一份（工具栏上两个「隐藏: 开/关」），放进设置面板后
+        必须单向化，否则会出现「左栏开了右栏没开」而设置里只有一个开关的矛盾。
+        """
+        value = bool(value)
+        if value == self._show_hidden:
+            return
+        self._show_hidden = value
+        for panel in self._panels.values():
+            panel.apply_hidden(value)
+        self.showHiddenChanged.emit()
+        self._schedule_save()
+
+    @Slot()
+    def toggleHidden(self):
+        self.setShowHidden(not self._show_hidden)
+
+    @Slot(str, str, result=bool)
+    def setWorkTime(self, which, text):
+        """改工作时段。返回 False 表示没接受（格式不对或早于开始），QML 据此回填。
+
+        为什么不交给 _clean_work 兜底：它遇到 start >= end 会整体回默认值，
+        用户输错一次就把另一个时段也悄悄改掉，不如明确拒绝。
+        """
+        key = {"start": "startMin", "end": "endMin"}.get(which)
+        if not key:
+            return False
+        value = state.parse_hhmm(text, -1)
+        if value < 0:
+            return False
+        if which == "start" and value >= self._work_schedule["endMin"]:
+            return False
+        if which == "end" and value <= self._work_schedule["startMin"]:
+            return False
+        if value != self._work_schedule[key]:
+            self._work_schedule = dict(self._work_schedule)
+            self._work_schedule[key] = value
+            self.workScheduleChanged.emit()
+            self._schedule_save()
+        return True
+
+    @Slot(bool)
     def setPreviewActive(self, active):
         active = bool(active)
         if active != self._preview_active:
             self._preview_active = active
             self.previewActiveChanged.emit()
+
+    def _set_quality(self, key, quality):
+        """把单项清晰度并进现有 prefs 再整体清洗：不走「只传一项」的路子，
+        否则清洗函数会把另一项按默认值覆盖掉。"""
+        merged = dict(self._preview_prefs)
+        merged[key] = quality
+        cleaned = state._clean_preview_prefs(merged)
+        if cleaned == self._preview_prefs:
+            return
+        self._preview_prefs = cleaned
+        self.previewPrefsChanged.emit()
+        self._schedule_save()
 
     @Slot(float)
     def setPdfQuality(self, quality):
@@ -663,12 +746,16 @@ class FileManagerBackend(QObject):
         不需要清页图缓存：缓存 key 是 (token, 页, 量化后的渲染宽度)，
         倍率乘进宽度里，换档 key 自然不同，等于自动失效。
         """
-        cleaned = state._clean_preview_prefs({"pdfQuality": quality})
-        if cleaned == self._preview_prefs:
-            return
-        self._preview_prefs = cleaned
-        self.previewPrefsChanged.emit()
-        self._schedule_save()
+        self._set_quality("pdfQuality", quality)
+
+    @Slot(float)
+    def setImageQuality(self, quality):
+        """图片清晰度档位（1.0 / 1.5 / 2.0），语义是解码尺寸倍率。
+
+        QML 那边会把结果 cap 到原图尺寸，所以调高对小于窗口的图没有副作用，
+        只会让「原图比显示区大」的图多解码一些像素。
+        """
+        self._set_quality("imageQuality", quality)
 
     @Slot()
     def shutdown(self):
@@ -694,6 +781,8 @@ class FileManagerBackend(QObject):
             "version": state.VERSION,
             "activeSide": self._active_side,
             "leftWidth": self._left_width,
+            "showHidden": self._show_hidden,
+            "workSchedule": dict(self._work_schedule),
             "favorites": list(self._favorites),
             "previewWindow": dict(self._preview_window),
             "previewPrefs": dict(self._preview_prefs),
@@ -710,12 +799,17 @@ class FileManagerBackend(QObject):
                                     or state._clean_preview_window(None))
         self._preview_prefs = dict(data.get("previewPrefs")
                                    or state._clean_preview_prefs(None))
+        self._show_hidden = bool(data.get("showHidden", False))
+        self._work_schedule = dict(data.get("workSchedule")
+                                   or state._clean_work(None))
         for side in ("left", "right"):
             cfg = data["panels"][side]
             cwd_value = state.validate(cfg["cwd"], HOME, self._local_source)
             self._panels[side].apply_initial(cwd_value, cfg)
         self.activeSideChanged.emit()
         self.leftWidthChanged.emit()
+        self.showHiddenChanged.emit()
+        self.workScheduleChanged.emit()
         self.favoritesChanged.emit()      # 保险：QML 若已挂载，同步一次收藏列表
         self.previewPrefsChanged.emit()
 

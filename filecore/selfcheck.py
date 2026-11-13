@@ -322,17 +322,84 @@ def _favorites_state():
         assert (legacy["w"], legacy["h"]) == (state.PREVIEW_DEFAULT_W,
                                               state.PREVIEW_DEFAULT_H), legacy
 
-        # 预览偏好：默认档、白名单往返、手改 JSON 写的野值必须回退到默认档
-        assert back["previewPrefs"]["pdfQuality"] == state.PDF_QUALITY_DEFAULT
+        # 预览偏好：两个独立档位（图片 / PDF），默认值不同、互不影响
+        assert back["previewPrefs"] == {
+            "pdfQuality": state.PDF_QUALITY_DEFAULT,
+            "imageQuality": state.IMAGE_QUALITY_DEFAULT,
+        }, back["previewPrefs"]
         prefs = state.default_state(home)
-        prefs["previewPrefs"] = {"pdfQuality": 2.0}
+        prefs["previewPrefs"] = {"pdfQuality": 2.0, "imageQuality": 1.5}
         assert state.save(cfg, prefs) is True
-        assert state.load(cfg, home)["previewPrefs"]["pdfQuality"] == 2.0
+        loaded = state.load(cfg, home)["previewPrefs"]
+        assert (loaded["pdfQuality"], loaded["imageQuality"]) == (2.0, 1.5), loaded
+        # 只写一项时另一项回默认（后端 _set_quality 负责先合并再清洗，这里是裸清洗的行为）
+        assert state._clean_preview_prefs({"pdfQuality": 1.0})["imageQuality"] == \
+            state.IMAGE_QUALITY_DEFAULT
         for bogus in (1.34, "高", None, 99, -1):
-            cleaned = state._clean_preview_prefs({"pdfQuality": bogus})
+            cleaned = state._clean_preview_prefs({"pdfQuality": bogus,
+                                                  "imageQuality": bogus})
             assert cleaned["pdfQuality"] == state.PDF_QUALITY_DEFAULT, (bogus, cleaned)
+            assert cleaned["imageQuality"] == state.IMAGE_QUALITY_DEFAULT, (bogus, cleaned)
         assert state._clean_preview_prefs("nonsense")["pdfQuality"] == \
             state.PDF_QUALITY_DEFAULT
+
+        # ---- 全局「显示隐藏文件」：顶层唯一真源 + 老配置按面板迁移 ----
+        assert back["showHidden"] is False, back["showHidden"]
+        hidden = state.default_state(home)
+        hidden["showHidden"] = True
+        assert state.save(cfg, hidden) is True
+        assert state.load(cfg, home)["showHidden"] is True
+        # 只认真正的 bool：手改 JSON 写成 "false" / 1 / null 一律回默认（False）
+        for bogus in ("false", "true", 1, 0, None, [], {}):
+            assert state._clean_flag(bogus) is False, bogus
+        assert state._clean_flag(True) is True
+        # 老文件：没有顶层字段，从面板遗留值迁移（任一为开即开）
+        legacy_hidden = state.default_state(home)
+        legacy_hidden.pop("showHidden")
+        legacy_hidden["panels"]["right"]["showHidden"] = True
+        assert state.save(cfg, legacy_hidden) is True
+        migrated = state.load(cfg, home)
+        assert migrated["showHidden"] is True, migrated["showHidden"]
+        # 迁移后面板里的副本也统一成全局值，写回去不会再分叉
+        assert migrated["panels"]["left"]["showHidden"] is True
+        # 顶层有值时以顶层为准（面板里的旧值不再参与）
+        override = state.default_state(home)
+        override["showHidden"] = False
+        override["panels"]["left"]["showHidden"] = True
+        assert state.save(cfg, override) is True
+        assert state.load(cfg, home)["showHidden"] is False
+
+        # ---- 工作时段：解析 / 清洗 / 顺序约束 ----
+        assert state.parse_hhmm("9:00", -1) == 540
+        assert state.parse_hhmm("09:00", -1) == 540
+        assert state.parse_hhmm("18:00", -1) == 1080
+        assert state.parse_hhmm(" 18:30 ", -1) == 1110
+        assert state.parse_hhmm("18点", -1) == 1080
+        assert state.parse_hhmm("1830", -1) == 1110
+        assert state.parse_hhmm("900", -1) == 540
+        for bogus in ("", "abc", "25:00", "12:75", "10:xx", None, [], -5, 1440):
+            assert state.parse_hhmm(bogus, -1) == -1, bogus
+        assert state.format_hhmm(720) == "12:00"
+        assert state.format_hhmm(1110) == "18:30"
+        assert state.format_hhmm(-10) == "00:00"
+        assert state._clean_work(None) == {"startMin": state.WORK_START_DEFAULT,
+                                           "endMin": state.WORK_END_DEFAULT}
+        assert state._clean_work({"startMin": 540, "endMin": 1080}) == \
+            {"startMin": 540, "endMin": 1080}
+        # 反序 / 相等：整组回默认，绝不留负数倒计时；越界项单独回默认，另一项保留
+        for bad in ({"startMin": 1200, "endMin": 600},
+                    {"startMin": 600, "endMin": 600},
+                    {"startMin": -1, "endMin": 1080}):
+            assert state._clean_work(bad) == {"startMin": state.WORK_START_DEFAULT,
+                                              "endMin": state.WORK_END_DEFAULT}, bad
+        assert state._clean_work({"startMin": 540, "endMin": 5000}) == {
+            "startMin": 540, "endMin": state.WORK_END_DEFAULT}
+        # 时段往返
+        work = state.default_state(home)
+        work["workSchedule"] = {"startMin": 510, "endMin": 1140}
+        assert state.save(cfg, work) is True
+        assert state.load(cfg, home)["workSchedule"] == {"startMin": 510,
+                                                         "endMin": 1140}
 
         # 常用位置：结构固定、路径真实存在
         items = locations.standard_locations(os.path.expanduser("~"))

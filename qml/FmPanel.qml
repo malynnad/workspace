@@ -208,7 +208,9 @@ Item {
                 }
             }
 
-            // ---------- 行 2：过滤 + 隐藏文件 ----------
+            // ---------- 行 2：过滤 ----------
+            // 「显示隐藏文件」已挪进全局设置面板（唯一一处开关，两栏同步），
+            // 这行只剩过滤框，于是让它吃满整行，不再留右侧空档。
             RowLayout {
                 Layout.fillWidth: true
                 Layout.preferredHeight: 30
@@ -216,7 +218,8 @@ Item {
                 spacing: 6
 
                 Item {
-                    Layout.preferredWidth: 200
+                    Layout.fillWidth: true
+                    Layout.minimumWidth: 120
                     Layout.preferredHeight: 30
                     Field {
                         id: filterField
@@ -235,14 +238,6 @@ Item {
                         color: filterField.activeFocus ? Theme.accent : Theme.textMuted
                     }
                 }
-                Btn {
-                    Layout.preferredWidth: 84
-                    text: root.panel && root.panel.showHidden ? "隐藏: 开" : "隐藏: 关"
-                    ghost: true
-                    boxHeight: 26
-                    onClicked: root.panel.toggleHidden()
-                }
-                Item { Layout.fillWidth: true }
             }
 
             // ---------- 响应式列头（列宽从 root.cols 取，不用 grid.width / 列数） ----------
@@ -313,8 +308,7 @@ Item {
 
                         Rectangle {
                             x: 0; y: 10; width: 12; height: 12; radius: 3
-                            color: model.isDir ? Theme.accent
-                                   : (model.kind === "image" ? Theme.todo : Theme.line)
+                            color: Theme.kindColor(model.isDir ? "folder" : model.kind)
                         }
                         Text {
                             x: 18; y: 0
@@ -541,9 +535,12 @@ Item {
                         onClicked: root.panel.goUp()
                     }
                     Text {
-                        text: (root.panel && root.panel.showHidden ? "隐藏: 开" : "隐藏: 关") + " · F5 刷新"
+                        // 开关本体在全局设置面板里，这行只做「当前是否显示」的状态回显，
+                        // 顺手把快捷键写出来（Ctrl+H 也能切，效果同样全局）。
+                        text: (files.showHidden ? "显示隐藏 · Ctrl+H" : "隐藏已收起 · Ctrl+H")
+                              + " · F5 刷新"
                         font.pixelSize: 11
-                        color: Theme.textMuted
+                        color: files.showHidden ? Theme.accent : Theme.textMuted
                     }
                 }
             }
