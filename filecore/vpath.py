@@ -104,6 +104,22 @@ def parent(v: str) -> str:
     return encode_path(os.path.dirname(p.rstrip("/")) or "/")
 
 
+def basename(v: str) -> str:
+    """vpath 最后一段名字（已解码）。根返回空串。
+
+    给「列表里还没有这一项」的时刻兜底：刚新建的目录要立刻进入行内改名，
+    那时扫描还没回来，按 vpath 取不到 Entry。
+    """
+    try:
+        _scheme, _container, inner = parse(v)
+    except (ValueError, TypeError):
+        return ""
+    text = (inner or "").rstrip("/")
+    if not text or text == "/":
+        return ""
+    return text.rsplit("/", 1)[-1]
+
+
 def display(v: str) -> str:
     """地址栏用的可读文本（解码百分号）。"""
     try:

@@ -2,7 +2,8 @@
 
 三池常量按前序定稿一次写全：IO_POOL=3 / PREVIEW_POOL=1 / OP_POOL=1。
 M1a 只实例化 io 池（8GB 内存吃紧，不预建空池）；M1b 加了 "preview" 单线程池
-（预览任务串行，连按方向键时旧任务直接丢弃），M1c 再加 "op"。
+（预览任务串行，连按方向键时旧任务直接丢弃），M1c 再加 "op"（写操作串行，
+同一时刻只有一份复制/移动在跑，进度条不会互相覆盖）。
 
 worker 只回传纯数据（list/dict/str），绝不回传自定义对象或 QImage；
 finished 信号用 QueuedConnection 接回主线程，模型操作一律在主线程做。
@@ -49,9 +50,12 @@ class TaskRunner(QObject):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self._pools = {"io": QThreadPool(self), "preview": QThreadPool(self)}
+        self._pools = {"io": QThreadPool(self), "preview": QThreadPool(self),
+                       "op": QThreadPool(self)}
         self._pools["io"].setMaxThreadCount(IO_POOL)
         self._pools["preview"].setMaxThreadCount(PREVIEW_POOL)
+        # 写操作串行：复制大目录时若并发两个，进度条和磁盘队列都会打架
+        self._pools["op"].setMaxThreadCount(OP_POOL)
         self._counter = itertools.count(1)
         self._lock = threading.Lock()
         self._tokens: dict[str, CancelToken] = {}

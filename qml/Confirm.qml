@@ -50,6 +50,19 @@ Popup {
         open()
     }
 
+    // 居中弹（右键菜单关掉之后没有可贴的控件，用它；不可逆操作走这条）
+    function openCentered(hostItem) {
+        var host = hostItem
+        if (!host && Window.window)
+            host = Window.window.contentItem
+        if (!host)
+            host = parent
+        parent = host
+        x = Math.round((host.width - width) / 2)
+        y = Math.round((host.height - implicitHeight) / 2 - 48)
+        open()
+    }
+
     contentItem: ColumnLayout {
         spacing: 10
 

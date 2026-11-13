@@ -67,7 +67,7 @@ python3 -m venv .venv
 | 日志→待办 | ✅ | 日志编辑器里「转为待办」按钮，content 取主题或正文首行 |
 | 脚本面板 | ✅ | 扫描 scripts 目录、QProcess 运行、输出回显、双击即跑 |
 | 模板回复 | 未做 | 表已建（templates），UI 阶段 1 后期加，可开关 |
-| 文件管理 | ✅ M1a + M1b | 常驻收藏栏（常用位置 + 可增删收藏夹）+ 等比双面板（窗口任何宽度左右等宽）+ 响应式列宽；导航 / 四列排序 / 过滤 / 隐藏文件 / 多选 / 快捷键 / 状态持久化。M1b 预览是**独立无边框窗口**：默认占屏幕右半边（1920×1080 → 960×972），可拖四边四角缩放、可拖出主窗口、始终置顶（能浮在 Excel 等其他应用上）、拖动标题栏移动、双击复位、几何记进 state.json；空格打开、Esc/空格关闭、↑↓ 切换相邻项并同步主窗口选中项；图片按宽度铺满（竖图/长页可上下滚动）、文本按宽度折行、**PDF 按页竖排滚动**（加密 PDF 弹密码框，Enter 解锁、错密码留在框里重试，同一文件本次会话只问一次）；五种预览器（图片/PDF/文本/文件夹摘要/兜底信息卡）；**设置统一到主窗口左下角**（全应用唯一入口，分「文件浏览 / 工作时段 / 预览清晰度」三组）：显示隐藏文件（全局一份，两栏同步）、顶栏上下班时间（原来硬编码 12:00/18:00）、图片与 PDF 清晰度（标准 / 清晰 / 极高），改完即时生效并记住；文件列表的类型点按类型着色（目录蓝、图片紫、PDF 珊瑚红、其余浅灰），一眼看出哪些能预览。写操作(M1c)、压缩包(M2)、插件(M3) 未做，接口已留 |
+| 文件管理 | ✅ M1a + M1b | 常驻收藏栏（常用位置 + 可增删收藏夹）+ 等比双面板（窗口任何宽度左右等宽）+ 响应式列宽；导航 / 四列排序 / 过滤 / 隐藏文件 / 多选 / 快捷键 / 状态持久化。M1b 预览是**独立无边框窗口**：默认占屏幕右半边（1920×1080 → 960×972），可拖四边四角缩放、可拖出主窗口、始终置顶（能浮在 Excel 等其他应用上）、拖动标题栏移动、双击复位、几何记进 state.json；空格打开、Esc/空格关闭、↑↓ 切换相邻项并同步主窗口选中项；图片按宽度铺满（竖图/长页可上下滚动）、文本按宽度折行、**PDF 按页竖排滚动**（加密 PDF 弹密码框，Enter 解锁、错密码留在框里重试，同一文件本次会话只问一次）；五种预览器（图片/PDF/文本/文件夹摘要/兜底信息卡）；**设置统一到主窗口左下角**（全应用唯一入口，分「文件浏览 / 工作时段 / 预览清晰度」三组）：显示隐藏文件（全局一份，两栏同步）、顶栏上下班时间（原来硬编码 12:00/18:00）、图片与 PDF 清晰度（标准 / 清晰 / 极高），改完即时生效并记住；文件列表的类型点按类型着色（目录蓝、图片紫、PDF 珊瑚红、其余浅灰），一眼看出哪些能预览。**写操作 M1c**：跟系统剪贴板双向互通（同时写 `text/uri-list` 和 `x-special/gnome-copied-files`，能和文件管理器互拷）、Ctrl+C/X/V、粘贴同名自动加序号（`报告.pdf` → `报告 (1).pdf`，从不覆盖）、F2 / Ctrl+Shift+N 行内改名（预选主干不选扩展名，Enter 提交、Esc 取消、点到别处也算提交）、Delete 移回收站（freedesktop 规范，跨分区落 `.Trash-<uid>`）、Shift+Delete 永久删除（必过确认框）、**自绘右键菜单**（样式走 Theme，不进系统）；后台分块复制、带进度、可取消。压缩包(M2)、插件(M3) 未做，接口已留 |
 
 ## 旧数据迁移（重装麒麟后）
 
@@ -85,6 +85,8 @@ workspace/
     vpath.py / entries.py / listing.py / cancel.py / state.py
     locations.py                    常用位置（XDG user-dirs 感知，零 Qt）
     sources/{__init__,local}.py     FileSource 抽象与本地实现
+    ops/                            写操作（零 Qt）：transfer 复制移动 / trash 回收站
+                                    / naming 唯一命名 / clipboard dual-MIME
     preview/                        两阶段预览器协议 + 五个内置预览器（零 Qt）
       base.py                       prepare(<10ms 出窗口) / view(后台加载) + 注册表
       textread.py / probe.py        安全文本读取与编码探测 / 纯 Python 图片尺寸探测
@@ -94,7 +96,7 @@ workspace/
   pdf_pages.py     PDF 页栅格化（PyMuPDF 优先、QtPdf 兜底；只出 QImage，不写盘）
   pdf_image_provider.py  QML 的 image://pdfpage —— 工作线程渲染 + 内存 LRU
   file_model.py    FileListModel（QAbstractListModel，10 个 role）
-  task_runner.py   后台任务三池（M1a 只实例化 IO 池）
+  task_runner.py   后台任务四池（scan / preview / op，op 单线程避免写盘打架）
   preview_provider.py / file_bridge.py   预览门面 + 双面板后端
   qml/Main.qml     壳：侧边栏 + StackLayout
   qml/Theme.qml    设计 token（颜色/圆角/间距）——调风格只改这个
@@ -104,6 +106,7 @@ workspace/
   qml/ScriptsPage.qml  脚本面板
   qml/FileManagerPage.qml / FmPanel.qml / FavoritesBar.qml
                                     等比双面板布局 / 单面板 / 常驻收藏栏
+  qml/ContextMenu.qml              自绘右键菜单（普通 Item + 全屏遮罩，不用 Popup）
   qml/PreviewWindow.qml            独立无边框预览窗口（Qt.Window + Frameless + StaysOnTop，四边四角可缩放）
   qml/PlaceholderPage.qml  旧占位页（保留，不再被引用）
 ```
@@ -112,7 +115,7 @@ workspace/
 
 ```bash
 .venv/bin/pyside6-qmllint qml/*.qml 2>&1 | grep '^Error'   # 期望 0 行
-TMPDIR=$PWD/.tmp .venv/bin/python -m filecore.selfcheck     # 18 项全 OK（含等比布局、收藏状态、五种预览器断言）
+TMPDIR=$PWD/.tmp .venv/bin/python -m filecore.selfcheck     # 23 项全 OK（含等比布局、收藏状态、五种预览器、写操作）
 FC_SELFCHECK_ITEMS=5000 TMPDIR=$PWD/.tmp .venv/bin/python -m filecore.selfcheck  # 重压测（可选）
 TMPDIR=$PWD/.tmp WORKSPACE_HOME=$PWD/.tmp/home QT_QPA_PLATFORM=offscreen \
   WS_SMOKE=1 .venv/bin/python main.py                     # 日志里不能有 QML 报错
@@ -177,6 +180,35 @@ TMPDIR=$PWD/.tmp WORKSPACE_HOME=$PWD/.tmp/home QT_QPA_PLATFORM=offscreen \
 - **PNG 编码是这条链路上最贵的一步**：一页扫描件渲染 34ms / PNG 编码 265ms，一页矢量文字
   7ms / 120ms。所以现在的做法是直接交 `QImage`（`QQuickAsyncImageProvider`），不编码不落盘；
   页面按「滚到哪渲到哪」按需渲染，打开文件时不做任何栅格化。
+
+## 写操作的坑（M1c，改之前先读）
+
+1. **右键菜单不用 Popup**。理由同设置面板：Popup 的 focusScope 在 Overlay 层，Esc 被它吃掉
+   还继续冒泡。`qml/ContextMenu.qml` = 普通 `Item` + 全屏透明遮罩 + 卡片。
+2. **卡片自己要吃点击**。`Rectangle` 不吃鼠标事件，点在 6px 内边距（行间空白）上会穿透到
+   遮罩，表现是「点菜单自己的空白处，菜单就关了」。所以在卡片里放一个吃点击的 MouseArea，
+   且要放在 `Column` 之前，让行的 MouseArea 仍然在上面。
+3. **先 `picked(action)` 再 `close()`**。`close()` 会清空 `items`，把当前这个 delegate 一起
+   销毁，销毁后继续往下走会被打断 —— 表现是「点了没反应」。顺序反了很难查。
+4. **菜单项的 `action` 是字符串 id，不是函数**。菜单数组要经过 QML 信号与 `var` 属性传递，
+   函数会在 QVariant 转换里丢掉类型，点下去静默无反应。由面板的 `performMenuAction(id)` 分派。
+5. **行内改名的回车要在 TextInput 的 `Keys` 里吃掉**。`TextInput.onAccepted` 不把事件标成
+   accepted，回车会冒泡到列表的 `Keys.onPressed`，那边把当前项「打开」—— 表现为「改完名顺手
+   弹出预览窗」。用 `Keys.onReturnPressed { event.accepted = true; commitRename() }`。
+6. **失焦提交要判「拿到过焦点」**（`heldFocus`）。否则列表刷新重建委托导致的假失焦会被当成
+   「点了别处」，直接提交掉。
+7. **新建目录不要紧跟 `newFolder()` 就 `beginRename()`**。`newFolder()` 内部会触发一次重扫，
+   ListView 复用/重建委托，编辑框刚拿到焦点就被顶掉 → 自动提交 → 人一个字都没输上就退出。
+   改成在 `focusRequested`（重扫落地、行真的存在了）里再进改名，见 `pendingNewFolder`。
+   同理 `onFocusRequested` 里正在改名时**不能** `list.forceActiveFocus()`。
+8. **改名预填不能只靠模型**。刚新建的项还没进列表，`nameOf()` 会拿到空串，于是「预填为空 →
+   直接放弃改名」。`nameOf` 现在兜底 `vpath.basename()`。
+9. **剪贴板 dual-MIME**：同时写 `text/uri-list`（标准兜底）和 `x-special/gnome-copied-files`
+   （第一行 `copy`/`cut`，Peony/Nautilus 认这个才能保留「剪切」语义）。自己写剪贴板会触发
+   `clipboardChanged`，用 `_clip_ignore` 0.6s 窗口屏蔽，别把自己的写入当成外部来源。
+10. **离屏探针必须 `QTest.qWait`**。菜单行由 `Column` 在 polish 阶段摆位，离屏下
+    `processEvents()` 不产生帧，行还叠在 y=0，点击会穿透到遮罩（现象：菜单关了但没执行）。
+    `QTest.qWait` 走定时器，能让渲染循环真的转起来。
 
 ## 麒麟部署
 

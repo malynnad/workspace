@@ -33,6 +33,26 @@ Item {
         files.activeSide === "left" ? files.left.cwd : files.right.cwd
 
     property bool settingsOpen: false        // 由 Main.qml 传入：设置面板是否展开
+    // 永久删除待确认的路径。右键菜单点完就关，确认框是页面级独一份，
+    // 所以「要对谁动手」先存在这里。
+    property var pendingDelete: []
+    // 哪个面板弹的菜单（点菜单项时按 action 字符串回到那个面板执行）
+    property var menuSource: null
+
+    function showMenu(source, items, sceneX, sceneY) {
+        // 面板给的是场景坐标，菜单挂在页面根上，换算到页面坐标再弹
+        root.menuSource = source
+        var p = root.mapFromItem(null, sceneX, sceneY)
+        pageMenu.openAt(p.x, p.y, items)
+    }
+
+    function askPermanentDelete(vpaths) {
+        var list = vpaths || []
+        if (list.length === 0)
+            return
+        root.pendingDelete = list
+        deleteConfirm.openCentered(root)
+    }
 
     readonly property bool pageActive: StackLayout.isCurrentItem
     // 预览浮窗打开时，浏览用的 9 个快捷键全部让位给下面 4 个预览快捷键。
@@ -40,7 +60,9 @@ Item {
     readonly property bool shortcutOk: root.pageActive && !files.preview.open &&
         !root.settingsOpen &&
         !leftPanel.addressFocused && !leftPanel.filterFocused &&
-        !rightPanel.addressFocused && !rightPanel.filterFocused
+        !rightPanel.addressFocused && !rightPanel.filterFocused &&
+        !leftPanel.renamingVpath && !rightPanel.renamingVpath &&
+        !pageMenu.visible && !deleteConfirm.visible
     // 预览窗自己激活时不能让路：Qt 的 Shortcut 不是严格 per-active-window，
     // 预览窗激活时这条也会跟着激活，导致「面板刚关、窗口也被关了」。
     readonly property bool previewKeysOk: root.pageActive && files.preview.open &&
@@ -92,6 +114,10 @@ Item {
                 Layout.minimumWidth: root.panelMin
                 Layout.fillHeight: true
                 onActivated: files.setActiveSide("left")
+                onMenuRequested: function(source, items, sx, sy) {
+                    root.showMenu(source, items, sx, sy)
+                }
+                onPermanentDeleteRequested: function(vps) { root.askPermanentDelete(vps) }
             }
 
             Item {
@@ -136,6 +162,10 @@ Item {
                 Layout.minimumWidth: root.panelMin
                 Layout.fillHeight: true
                 onActivated: files.setActiveSide("right")
+                onMenuRequested: function(source, items, sx, sy) {
+                    root.showMenu(source, items, sx, sy)
+                }
+                onPermanentDeleteRequested: function(vps) { root.askPermanentDelete(vps) }
             }
         }
 
@@ -256,5 +286,76 @@ Item {
         sequence: "Space"
         enabled: root.previewKeysOk
         onActivated: files.preview.close()
+    }
+
+    // ---------------- 写操作快捷键（M1c） ----------------
+    // 统一放在页面级：面板可能没有焦点（刚点过列头/空白），
+    // 用 Shortcut 才能保证「Ctrl+C 复制的是活动面板的选中项」。
+    Shortcut {
+        sequence: "Ctrl+C"
+        enabled: root.shortcutOk
+        onActivated: root.activePanel().copySelection()
+    }
+    Shortcut {
+        sequence: "Ctrl+X"
+        enabled: root.shortcutOk
+        onActivated: root.activePanel().cutSelection()
+    }
+    Shortcut {
+        sequence: "Ctrl+V"
+        enabled: root.shortcutOk
+        onActivated: root.activePanel().paste()
+    }
+    Shortcut {
+        sequence: "F2"
+        enabled: root.shortcutOk
+        onActivated: root.activeFm().renameSelected()
+    }
+    Shortcut {
+        sequence: "Delete"
+        enabled: root.shortcutOk
+        onActivated: root.activePanel().trashSelection()
+    }
+    Shortcut {
+        // 永久删除：不可逆，所以只走快捷键 + 确认框，不进右键菜单（防误点）
+        sequence: "Shift+Delete"
+        enabled: root.shortcutOk
+        onActivated: root.activeFm().requestPermanentDelete()
+    }
+    Shortcut {
+        sequence: "Ctrl+Shift+N"
+        enabled: root.shortcutOk
+        onActivated: root.activeFm().createFolder()
+    }
+    // 菜单开着时 Esc 只关菜单（主窗口那条 Esc 的门控是 settingsPanel.visible，不会打架）
+    Shortcut {
+        sequence: "Escape"
+        enabled: root.pageActive && pageMenu.visible
+        onActivated: pageMenu.close()
+    }
+
+    // ---------------- 右键菜单 / 不可逆操作确认 ----------------
+    ContextMenu {
+        id: pageMenu
+        anchors.fill: parent
+        onPicked: function(actionId) {
+            if (root.menuSource)
+                root.menuSource.performMenuAction(actionId)
+        }
+    }
+
+    Confirm {
+        id: deleteConfirm
+        objectName: "deleteConfirm"
+        message: root.pendingDelete.length > 1
+                 ? ("永久删除 " + root.pendingDelete.length + " 项？")
+                 : "永久删除这一项？"
+        hint: "不进回收站，删除后无法恢复"
+        okText: "永久删除"
+        onAccepted: {
+            if (root.pendingDelete.length > 0)
+                files.deletePaths(root.pendingDelete)
+        }
+        onClosed: root.pendingDelete = []
     }
 }

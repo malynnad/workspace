@@ -43,6 +43,10 @@ class FileListModel(QAbstractListModel):
         self._rows: list[dict] = []
         self._index: dict[str, int] = {}
         self._selected: set[str] = set()
+        # 剪切中的路径（Qt 只认这个集合，不信行里的 isCut 字段）：
+        # 重扫/重新排序后模型重建，但「正在剪切」是跨扫描存在的状态，
+        # 所以放在模型里由后端统一推，不跟着每行 dict 走。
+        self._cut: set[str] = set()
 
     # ---- QAbstractItemModel 必需实现 ----
     def roleNames(self):
@@ -77,7 +81,7 @@ class FileListModel(QAbstractListModel):
         if role == self.SelectedRole:
             return item.get("vpath", "") in self._selected
         if role == self.IsCutRole:
-            return bool(item.get("isCut", False))
+            return item.get("vpath", "") in self._cut
         return None
 
     # ---- 数据装载（仅主线程） ----
@@ -115,6 +119,18 @@ class FileListModel(QAbstractListModel):
     @Slot()
     def clear_selection(self):
         self.set_selected(set())
+
+    @Slot("QVariantList")
+    def set_cut(self, vpaths):
+        """只重绘 isCut role，不动选中、不重扫。"""
+        new = set(vpaths or [])
+        changed = self._cut ^ new
+        self._cut = new
+        for vp in changed:
+            row = self._index.get(vp)
+            if row is not None:
+                idx = self.index(row, 0)
+                self.dataChanged.emit(idx, idx, [self.IsCutRole])
 
     def row_of(self, vpath: str) -> int:
         return self._index.get(vpath, -1)

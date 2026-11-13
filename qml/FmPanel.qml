@@ -20,6 +20,19 @@ Item {
     property bool keysEnabled: true
     signal activated()
 
+    // 右键菜单挂在页面根上（只有那儿能盖住左右两栏），所以由面板算好菜单项、
+    // 把场景坐标上抛。永久删除同理：确认框是页面级的一个，不左右各来一份。
+    signal menuRequested(var source, var items, real sceneX, real sceneY)
+    signal permanentDeleteRequested(var vpaths)
+
+    // 行内重命名：只存 vpath，delegate 里按 model.vpath 决定显示文本还是输入框。
+    property string renamingVpath: ""
+    property string renameDraft: ""
+    // 新建目录的 vpath：等这一轮刷新回来、行真的存在了再进行内改名。
+    // 直接在 newFolder() 之后 beginRename 会被刷新重建委托打断（编辑框刚拿到
+    // 焦点就被顶掉，被当成「点了别处」自动提交），见 onFocusRequested。
+    property string pendingNewFolder: ""
+
     readonly property int colSize: 64
     readonly property int colKind: 60
     readonly property int colTime: 96
@@ -107,6 +120,143 @@ Item {
     // （FileManagerPage.onVisibleChanged 里 callLater 调 focusList），免得跟地址栏/过滤框打架。
     onKeysEnabledChanged: {
         if (!root.keysEnabled) list.focus = false
+    }
+
+    // ---------------- 写操作：菜单 / 行内重命名 ----------------
+    function hasSelection() {
+        return root.panel && root.panel.selectedCount > 0
+    }
+
+    function isSelected(vp) {
+        return root.panel ? root.panel.selectedVpaths().indexOf(vp) >= 0 : false
+    }
+
+    function selectedVpaths() {
+        return root.panel ? root.panel.selectedVpaths() : []
+    }
+
+    function showMenu(kind, sceneX, sceneY) {
+        root.activated()
+        var items = kind === "item" ? root.buildItemMenu() : root.buildEmptyMenu()
+        if (items.length > 0)
+            root.menuRequested(root, items, sceneX, sceneY)
+    }
+
+    // 菜单只传 action 字符串（函数过不了 QVariant），实际动作在这里分派
+    function performMenuAction(id) {
+        if (!root.panel)
+            return
+        switch (id) {
+        case "open":
+            if (root.currentVpath !== "")
+                root.panel.activate(root.currentVpath)
+            break
+        case "defaultApp":
+            if (root.currentVpath !== "")
+                files.openDefault(root.currentVpath)
+            break
+        case "copy": root.panel.copySelection(); break
+        case "cut": root.panel.cutSelection(); break
+        case "paste": root.panel.paste(); break
+        case "rename": root.renameSelected(); break
+        case "trash": root.panel.trashSelection(); break
+        case "copyPath": files.copyPathText(root.selectedVpaths()); break
+        case "newFolder": root.createFolder(); break
+        case "selectAll": root.panel.selectAll(); break
+        case "refresh": root.panel.refresh(); break
+        case "terminal": files.openTerminal(root.panel.cwd); break
+        case "copyCwd": files.copyPathText([root.panel.cwd]); break
+        }
+    }
+
+    function buildItemMenu() {
+        var count = root.panel ? root.panel.selectedCount : 0
+        var single = count === 1
+        var title = single && root.panel.info ? root.panel.info.name :
+                    (count > 1 ? ("已选 " + count + " 项") : "未选择")
+        var clipCount = files.clipboard.count
+        return [
+            { header: true, label: title },
+            { label: "打开", shortcut: "Enter", enabled: single, action: "open" },
+            { label: "用默认程序打开", enabled: single, action: "defaultApp" },
+            { separator: true },
+            { label: "复制", shortcut: "Ctrl+C", action: "copy" },
+            { label: "剪切", shortcut: "Ctrl+X", action: "cut" },
+            { label: "粘贴", shortcut: "Ctrl+V", enabled: clipCount > 0, action: "paste" },
+            { separator: true },
+            { label: "重命名", shortcut: "F2", enabled: single, action: "rename" },
+            { label: "移到回收站", shortcut: "Delete", danger: true, action: "trash" },
+            { separator: true },
+            { label: "复制路径", action: "copyPath" },
+            { label: "新建文件夹", shortcut: "Ctrl+Shift+N", action: "newFolder" }
+        ]
+    }
+
+    function buildEmptyMenu() {
+        return [
+            { label: "粘贴", shortcut: "Ctrl+V", enabled: files.clipboard.count > 0,
+              action: "paste" },
+            { label: "新建文件夹", shortcut: "Ctrl+Shift+N", action: "newFolder" },
+            { separator: true },
+            { label: "全选", shortcut: "Ctrl+A", action: "selectAll" },
+            { label: "刷新", shortcut: "F5", action: "refresh" },
+            { separator: true },
+            { label: "在终端中打开", action: "terminal" },
+            { label: "复制当前路径", action: "copyCwd" }
+        ]
+    }
+
+    function beginRename(vp) {
+        var target = vp || root.currentVpath
+        if (!target || !root.panel)
+            return
+        root.renameDraft = root.panel.nameOf(target)
+        if (root.renameDraft === "")
+            return
+        root.renamingVpath = target
+    }
+
+    function renameSelected() {
+        if (!root.panel || root.panel.selectedCount !== 1)
+            return
+        var picked = root.selectedVpaths()
+        if (picked.length === 1)
+            root.beginRename(picked[0])
+    }
+
+    function cancelRename() {
+        root.renamingVpath = ""
+        root.renameDraft = ""
+        if (root.keysEnabled) list.forceActiveFocus()
+    }
+
+    function commitRename() {
+        var vp = root.renamingVpath
+        if (vp === "" || !root.panel)
+            return
+        var text = root.renameDraft
+        root.renamingVpath = ""
+        var err = root.panel.renameItem(vp, text)
+        if (err !== "" && err !== undefined)
+            Toast.show(err)
+        if (root.keysEnabled) list.forceActiveFocus()
+    }
+
+    function createFolder() {
+        if (!root.panel)
+            return
+        var vp = root.panel.newFolder()
+        // 这里只登记，不立刻进改名：newFolder 会触发一次重扫，ListView 复用/重建
+        // 委托，编辑框瞬间失焦 → 自动提交 → 人一个字都没输上就退出了。
+        // 等重扫把「选中新目录 + 滚到可见」做完（focusRequested）再进去。
+        if (vp !== "")
+            root.pendingNewFolder = vp
+    }
+
+    function requestPermanentDelete() {
+        if (!root.panel || root.panel.selectedCount === 0)
+            return
+        root.permanentDeleteRequested(root.selectedVpaths())
     }
 
     function statusText() {
@@ -316,6 +466,8 @@ Item {
                         width: ListView.view.width
                         height: root.rowH
                         radius: 6
+                        // 剪切中的项半透明：一眼看出「待会儿会被移走的是这几项」
+                        opacity: model.isCut ? 0.45 : 1.0
                         color: model.selected ? Theme.accentSoft
                                : (rowMouse.containsMouse ? Theme.line : "transparent")
 
@@ -324,6 +476,7 @@ Item {
                             color: Theme.kindColor(model.isDir ? "folder" : model.kind)
                         }
                         Text {
+                            visible: root.renamingVpath !== model.vpath
                             x: 18; y: 0
                             width: Math.max(0, root.wOf("name") - 18)
                             height: root.rowH
@@ -333,6 +486,87 @@ Item {
                             font.weight: model.isDir ? Font.Medium : Font.Normal
                             color: model.selected ? Theme.accent : Theme.text
                             elide: Text.ElideRight
+                        }
+
+                        // 行内重命名：白底 + 1px 蓝框。Enter 提交、Esc 取消、失焦提交。
+                        // 软渲染约束里只禁 Layout/Canvas/动画/Icon，TextInput 可以用；
+                        // 只在正在改名的那一行创建（visible 绑定），平时零开销。
+                        Rectangle {
+                            x: 14
+                            width: Math.max(80, root.wOf("name") - 14)
+                            height: 24
+                            anchors.verticalCenter: parent.verticalCenter
+                            radius: 6
+                            color: Theme.surface
+                            border.width: 1
+                            border.color: Theme.accent
+                            visible: root.renamingVpath === model.vpath
+                            z: 3
+
+                            TextInput {
+                                id: nameEdit
+                                objectName: "fmRenameEdit"
+                                anchors.fill: parent
+                                anchors.leftMargin: 5
+                                anchors.rightMargin: 5
+                                verticalAlignment: TextInput.AlignVCenter
+                                font.pixelSize: 12
+                                color: Theme.text
+                                clip: true
+                                selectByMouse: true
+
+                                // 有没有真正拿到过焦点。列表刷新会让输入框「假失焦」
+                                // （委托刚建出来就被 ListView 拿走焦点），那种失焦不能算提交，
+                                // 否则新建文件夹后刚进改名就被自动提交掉，人还没输一个字。
+                                property bool heldFocus: false
+
+                                // text 不能绑 renameDraft：用户一输入绑定就断了，
+                                // 下一次改名会填进旧名字。改成「每次进入编辑时赋值」。
+                                function startEditing() {
+                                    text = root.renameDraft
+                                    heldFocus = false
+                                    forceActiveFocus()
+                                    // 预选主干不选扩展名（.bashrc 这种整体选）
+                                    var dot = text.lastIndexOf(".")
+                                    if (dot > 0) select(0, dot)
+                                    else selectAll()
+                                }
+
+                                onVisibleChanged: if (visible) startEditing()
+                                Component.onCompleted: if (visible) startEditing()
+
+                                onTextChanged: {
+                                    if (root.renamingVpath === model.vpath)
+                                        root.renameDraft = text
+                                }
+                                // 回车必须在这里吃掉再提交。TextInput 的 onAccepted 不会把
+                                // 事件标成 accepted，回车会继续冒泡到列表的 Keys.onPressed，
+                                // 那边把当前项「打开」——表现是改完名顺手弹出预览窗。
+                                Keys.onReturnPressed: function(event) {
+                                    event.accepted = true
+                                    root.commitRename()
+                                }
+                                Keys.onEnterPressed: function(event) {
+                                    event.accepted = true
+                                    root.commitRename()
+                                }
+                                Keys.onEscapePressed: function(event) {
+                                    event.accepted = true
+                                    root.cancelRename()
+                                }
+                                // 点到别处（失焦）也算提交，跟桌面文件管理器一致。
+                                // 但只有「拿到过焦点再失焦」才算 —— 见 heldFocus 的注释。
+                                onActiveFocusChanged: {
+                                    if (activeFocus) {
+                                        heldFocus = true
+                                        return
+                                    }
+                                    if (!heldFocus)
+                                        return
+                                    if (root.renamingVpath === model.vpath)
+                                        root.commitRename()
+                                }
+                            }
                         }
                         Text {
                             x: root.xOf("size"); y: 0
@@ -426,6 +660,31 @@ Item {
                                 files.preview.request(root.currentVpath)
                             event.accepted = true
                         }
+                    }
+                }
+
+                // 右键统一走这一层（只接右键，左键照样穿到 delegate）。
+                // 为什么不在 delegate 里接：空白处没有 delegate，而 ListView 本身不吃右键，
+                // 同级的 MouseArea 又收不到冒泡 —— 只能盖一层，再用 indexAt 区分行与空白。
+                MouseArea {
+                    anchors.fill: parent
+                    z: 20
+                    acceptedButtons: Qt.RightButton
+                    onPressed: function(mouse) {
+                        var row = list.indexAt(mouse.x, mouse.y)
+                        var p = mapToItem(null, mouse.x, mouse.y)
+                        if (row >= 0) {
+                            var vp = root.panel ? root.panel.vpathAt(row) : ""
+                            if (vp !== "") {
+                                if (!root.isSelected(vp))
+                                    root.panel.select(vp, "single")
+                                root.currentVpath = vp
+                                list.currentIndex = row
+                                root.showMenu("item", p.x, p.y)
+                                return
+                            }
+                        }
+                        root.showMenu("empty", p.x, p.y)
                     }
                 }
 
@@ -566,6 +825,26 @@ Item {
     Connections {
         target: root.panel
         function onCwdChanged() { addressField.text = root.panel.displayPath }
+        // 写操作完成后面板会请求「选中并定位到这一项」（粘贴结果、新建的文件夹）
+        function onFocusRequested(vp, row) {
+            if (!root.keysEnabled)
+                return
+            root.currentVpath = vp
+            list.currentIndex = row
+            list.positionViewAtIndex(row, ListView.Contain)
+            // 新建目录：这一轮刷新已经把行摆好了，此刻再进改名，编辑框建出来
+            // 就不会再被重建打断。
+            if (root.pendingNewFolder !== "" && vp === root.pendingNewFolder) {
+                var fresh = root.pendingNewFolder
+                root.pendingNewFolder = ""
+                root.beginRename(fresh)
+                return
+            }
+            // 正在行内改名时不能抢焦点，否则编辑焦点被顶掉、当成失焦提交
+            if (root.renamingVpath !== "")
+                return
+            list.forceActiveFocus()
+        }
     }
     // toast 由 FileManagerPage.qml 页面级单点接住，两个面板实例不各弹一次。
     Component.onCompleted: addressField.text = root.panel.displayPath

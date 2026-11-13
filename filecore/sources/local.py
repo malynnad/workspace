@@ -64,12 +64,14 @@ class LocalSource(FileSource):
         return make_entry(name, v, is_dir, size, mtime)
 
     def capabilities(self, v: str) -> dict:
-        # M1b 打开预览能力；写操作仍是 M1c，翻位后 QML 里的按钮会自动出现。
+        """本地目录的能力位。M1c 已接上写操作，四个写位翻 True；
+        具体「这一下点不点得动」由上层结合选中数、剪贴板内容、面板 busy 判断，
+        这里只回答「这个源支不支持这类操作」。"""
         return {
-            "canWrite": False,
-            "canPaste": False,
-            "canRename": False,
-            "canTrash": False,
+            "canWrite": True,
+            "canPaste": True,
+            "canRename": True,
+            "canTrash": True,
             "canPreview": True,
             "canArchive": False,
             "sources": ["file"],

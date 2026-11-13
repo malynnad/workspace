@@ -77,6 +77,15 @@ def _vpath_hidden():
     assert not vpath.is_hidden("normal.txt")
 
 
+def _vpath_basename():
+    # 行内重命名的预填名：列表里还没有这一项时按 vpath 末段取
+    assert vpath.basename(vpath.encode_path("/a/b/报告 2024.pdf")) == "报告 2024.pdf"
+    assert vpath.basename(vpath.encode_path("/a/b/dir/")) == "dir"
+    assert vpath.basename(vpath.encode_path("/")) == ""
+    assert vpath.basename(vpath.encode_archive("/tmp/x.zip", "sub/dir")) == "dir"
+    assert vpath.basename("") == ""
+
+
 def _natural_key():
     names = ["f10", "f2", "a01", "a1", "中文", ""]
     ordered = sorted(names, key=natural_key)
@@ -572,6 +581,162 @@ def _preview_pipeline():
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+def _ops_naming():
+    from .ops.naming import split_ext, unique_name, validate_name
+
+    assert split_ext(".bashrc") == (".bashrc", "")
+    assert split_ext("a.tar.gz") == ("a.tar", ".gz")
+    assert split_ext("Makefile") == ("Makefile", "")
+    assert split_ext("dir/") == ("dir/", "")
+    assert validate_name("ok.txt") == ""
+    assert validate_name("") and validate_name("a/b") and validate_name("..")
+
+    tmp = tempfile.mkdtemp()
+    try:
+        open(os.path.join(tmp, "a.txt"), "w").close()
+        assert unique_name(tmp, "a.txt") == "a (1).txt"
+        open(os.path.join(tmp, "a (1).txt"), "w").close()
+        assert unique_name(tmp, "a.txt") == "a (2).txt"
+        assert unique_name(tmp, "b.txt") == "b.txt"
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def _ops_transfer():
+    from .ops.transfer import make_directory, rename_item, run_transfer
+
+    tmp = tempfile.mkdtemp()
+    try:
+        src = os.path.join(tmp, "src")
+        os.makedirs(os.path.join(src, "sub"))
+        with open(os.path.join(src, "a.txt"), "w") as f:
+            f.write("hello")
+        with open(os.path.join(src, "sub", "b.txt"), "w") as f:
+            f.write("x" * 3000)
+        os.symlink(os.path.join(src, "a.txt"), os.path.join(src, "link"))
+        os.utime(os.path.join(src, "a.txt"), (1_600_000_000, 1_600_000_000))
+
+        dest = os.path.join(tmp, "dest")
+        os.makedirs(dest)
+        ticks = []
+        r = run_transfer([vpath.encode_path(src)], vpath.encode_path(dest),
+                         tick=lambda done, total: ticks.append((done, total)))
+        assert r["ok"] == 1 and not r["failed"], r
+        copied = os.path.join(dest, "src")
+        assert os.path.exists(os.path.join(copied, "a.txt"))
+        assert os.path.islink(os.path.join(copied, "link"))
+        assert os.path.getsize(os.path.join(copied, "sub", "b.txt")) == 3000
+        assert int(os.path.getmtime(os.path.join(copied, "a.txt"))) == 1_600_000_000
+        assert ticks and ticks[-1][0] == ticks[-1][1] == 3005, ticks[-3:]
+
+        # 同名自动重命名，不覆盖
+        r2 = run_transfer([vpath.encode_path(src)], vpath.encode_path(dest))
+        assert r2["ok"] == 1 and r2["renamed"] == 1, r2
+        assert r2["paths"][0].endswith("src%20%281%29"), r2["paths"]
+
+        # 移动：同一分区走 rename，源消失，落到 dest 顶层（那里没有同名项）
+        r3 = run_transfer([vpath.encode_path(os.path.join(dest, "src", "a.txt"))],
+                          vpath.encode_path(dest), move=True)
+        assert r3["ok"] == 1, r3
+        assert not os.path.exists(os.path.join(dest, "src", "a.txt"))
+        assert os.path.exists(os.path.join(dest, "a.txt"))
+
+        # 不能放进它自己里面
+        r4 = run_transfer([vpath.encode_path(copied)], vpath.encode_path(copied))
+        assert r4["ok"] == 0 and "自己" in r4["failed"][0]["error"], r4
+
+        # 取消：不留下半成品
+        token = CancelToken()
+        token.cancel()
+        dest2 = os.path.join(tmp, "dest2")
+        os.makedirs(dest2)
+        r5 = run_transfer([vpath.encode_path(src)], vpath.encode_path(dest2), cancel=token)
+        assert r5["cancelled"] is True and r5["ok"] == 0, r5
+        assert os.listdir(dest2) == [], os.listdir(dest2)
+
+        # 改名 / 新建文件夹
+        open(os.path.join(dest, "b.txt"), "w").close()
+        new_vp, err = rename_item(vpath.encode_path(os.path.join(dest, "a.txt")), "b.txt")
+        assert err and new_vp == "", "同名改名必须被拒"
+        new_vp, err = rename_item(vpath.encode_path(os.path.join(dest, "a.txt")), "c.txt")
+        assert not err and os.path.exists(os.path.join(dest, "c.txt")), err
+        nv, err = make_directory(vpath.encode_path(dest), "新建文件夹")
+        assert not err and os.path.isdir(vpath.to_local(nv)), err
+        nv2, err2 = make_directory(vpath.encode_path(dest), "新建文件夹")
+        assert not err2 and vpath.to_local(nv2) != vpath.to_local(nv), "同名新建必须加序号"
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def _ops_trash():
+    from .ops import trash
+
+    tmp = tempfile.mkdtemp()
+    old = os.environ.get("XDG_DATA_HOME")
+    os.environ["XDG_DATA_HOME"] = os.path.join(tmp, "xdg")
+    try:
+        f = os.path.join(tmp, "x.txt")
+        with open(f, "w") as fh:
+            fh.write("bye")
+        res = trash.trash_path(f)
+        assert res["ok"] and res["name"] == "x.txt", res
+        assert not os.path.exists(f), "移到回收站后源文件还在"
+        info_path = os.path.join(tmp, "xdg", "Trash", "info", "x.txt.trashinfo")
+        text = open(info_path, encoding="utf-8").read()
+        assert text.startswith("[Trash Info]"), text
+        assert "Path=" in text and "DeletionDate=" in text
+        assert "x.txt" in text and text.count("Path=") == 1
+        assert os.path.exists(os.path.join(tmp, "xdg", "Trash", "files", "x.txt"))
+
+        with open(f, "w") as fh:
+            fh.write("again")
+        res2 = trash.trash_path(f)
+        assert res2["ok"] and res2["name"] == "x (1).txt", res2
+
+        assert trash.trash_path(os.path.join(tmp, "不存在")).get("ok") is False
+        d = os.path.join(tmp, "dir")
+        os.makedirs(d)
+        open(os.path.join(d, "in.txt"), "w").close()
+        res3 = trash.trash_path(d)
+        assert res3["ok"] and os.path.isdir(os.path.join(tmp, "xdg", "Trash", "files", "dir"))
+    finally:
+        if old is None:
+            os.environ.pop("XDG_DATA_HOME", None)
+        else:
+            os.environ["XDG_DATA_HOME"] = old
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def _ops_clipboard():
+    from .ops import clipboard
+
+    tmp = tempfile.mkdtemp()
+    try:
+        f = os.path.join(tmp, "中文 名.txt")
+        with open(f, "w") as fh:
+            fh.write("x")
+        blob = clipboard.encode("cut", [vpath.encode_path(f)])
+        assert set(blob) == {clipboard.MIME_URI, clipboard.MIME_GNOME}, set(blob)
+        assert blob[clipboard.MIME_GNOME].startswith(b"cut"), blob[clipboard.MIME_GNOME]
+        assert b"%20" in blob[clipboard.MIME_GNOME]
+
+        parsed = clipboard.parse(blob)
+        assert parsed["operation"] == "cut", parsed
+        assert parsed["vpaths"] == [vpath.encode_path(f)], parsed
+        assert parsed["ignored"] == 0
+
+        # 只给 uri-list 时必须退化成 copy（没有剪切语义来源）
+        assert clipboard.parse({clipboard.MIME_URI: blob[clipboard.MIME_URI]})["operation"] == "copy"
+        # http / 不存在的路径要忽略，而不是当成待粘贴项
+        assert clipboard.parse({clipboard.MIME_URI: b"http://a/b\r\n"})["vpaths"] == []
+        assert clipboard.parse({clipboard.MIME_URI: b"file:///nope/nope\r\n"})["ignored"] == 1
+        # 空剪贴板
+        assert clipboard.parse({})["vpaths"] == []
+        assert clipboard.encode("copy", []) == {}
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 def _zero_qt():
     assert "PySide6" not in sys.modules
     assert "PyQt5" not in sys.modules
@@ -583,6 +748,7 @@ def main() -> int:
         ("vpath 编码 / 中文 / 空格 / # / %", _vpath_encoding),
         ("vpath 压缩包跨容器语义", _vpath_archive),
         ("vpath 隐藏文件判断", _vpath_hidden),
+        ("vpath 末段取名（改名预填兜底）", _vpath_basename),
         ("natural_key 自然序", _natural_key),
         ("sort_entries 目录恒优先（含降序）", _sort_entries),
         ("visible_entries 过滤", _visible_entries),
@@ -596,6 +762,10 @@ def main() -> int:
         ("收藏项往返 / 旧配置兼容 / 常用位置 / 预览窗几何", _favorites_state),
         ("FileSource 注册表 / 四种预览器注册", _registry_and_preview),
         ("预览两阶段协议 / 文本编码 / 图片头 / 目录摘要", _preview_pipeline),
+        ("ops 唯一命名 / 文件名校验", _ops_naming),
+        ("ops 复制移动 / 同名重命名 / 取消不留残渣", _ops_transfer),
+        ("ops 回收站规范 / 同名序号 / 目录", _ops_trash),
+        ("ops 剪贴板 dual-MIME 往返 / cut 语义", _ops_clipboard),
         ("零 Qt 依赖", _zero_qt),
     ]:
         check(label, fn)

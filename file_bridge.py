@@ -11,12 +11,19 @@ M1a 只读。写操作、预览器、压缩包源都通过「注册表 + capabil
 from __future__ import annotations
 
 import os
+import shutil
+import subprocess
+import sys
+import time
 from pathlib import Path
 
-from PySide6.QtCore import QObject, Property, QTimer, Qt, Signal, Slot
+from PySide6.QtCore import (QByteArray, QMimeData, QObject, Property, QProcess,
+                            QTimer, Qt, QUrl, Signal, Slot)
+from PySide6.QtGui import QDesktopServices, QGuiApplication
 
 import filecore
 from filecore import listing, locations, state, vpath
+from filecore import ops
 from filecore.entries import kind_label
 from filecore.sources import UnknownScheme, capabilities_of, resolve
 from filecore.sources.local import LocalSource
@@ -25,6 +32,21 @@ from preview_provider import PreviewProvider
 from task_runner import TaskRunner
 
 HOME = str(Path.home())
+
+# 「在终端中打开」按顺序试这几个。`{dir}` 会被替换成工作目录；
+# 没有占位符的（x-terminal-emulator / xterm）靠 Popen 的 cwd 参数进去。
+_TERMINALS = [
+    ("x-terminal-emulator", []),
+    ("konsole", ["--workdir", "{dir}"]),
+    ("mate-terminal", ["--working-directory", "{dir}"]),
+    ("ukui-terminal", ["--working-directory", "{dir}"]),
+    ("gnome-terminal", ["--working-directory", "{dir}"]),
+    ("xfce4-terminal", ["--working-directory", "{dir}"]),
+    ("terminator", ["--working-directory", "{dir}"]),
+    ("alacritty", ["--working-directory", "{dir}"]),
+    ("kitty", ["--directory", "{dir}"]),
+    ("xterm", []),
+]
 
 
 class FilePanel(QObject):
@@ -39,6 +61,9 @@ class FilePanel(QObject):
     capabilitiesChanged = Signal()
     infoChanged = Signal()
     countsChanged = Signal()
+    # 写操作后要「选中刚粘贴/刚新建的那一项」：扫描是异步的，所以由面板自己
+    # 在结果回来后落地选中，再用这个信号让 QML 把行滚到可见区并给回键盘焦点。
+    focusRequested = Signal(str, int)
 
     def __init__(self, side: str, backend, parent=None):
         super().__init__(parent)
@@ -65,6 +90,7 @@ class FilePanel(QObject):
         self._info: dict = {}
         self._job = ""
         self._pending: list[list[dict]] = []
+        self._pending_select: list[str] = []
 
         self._batch = QTimer(self)
         self._batch.setSingleShot(True)
@@ -315,6 +341,105 @@ class FilePanel(QObject):
         nxt = max(0, min(self._model.rowCount() - 1, row + int(delta)))
         return self._model.vpath_at(nxt) or ""
 
+    # ---------------- Slots：写操作（M1c） ----------------
+    # 分层约定：这里只做「取选中 → 交后端」，真正的文件系统操作、剪贴板、
+    # 线程池、Toast 全在 FileManagerBackend 上；面板不碰 QClipboard 也不碰线程。
+    def selectionVpaths(self) -> list[str]:
+        """按列表显示顺序返回选中项（复制/删除都照用户看到的顺序走）。"""
+        if not self._selected:
+            return []
+        rows = [self._model.vpath_at(i) for i in range(self._model.rowCount())]
+        picked = [vp for vp in rows if vp in self._selected]
+        return picked or sorted(self._selected)
+
+    @Slot()
+    def copySelection(self):
+        self._backend.clipboardCopy(self.selectionVpaths(), cut=False)
+
+    @Slot()
+    def cutSelection(self):
+        self._backend.clipboardCopy(self.selectionVpaths(), cut=True)
+
+    @Slot()
+    def paste(self):
+        self._backend.pasteInto(self)
+
+    @Slot(str, str, result=str)
+    def renameItem(self, vp, new_name):
+        """返回空串表示成功，否则是错误文案（QML 据此把输入框留着让用户改）。"""
+        new_vp, err = ops.rename_item(vp, new_name)
+        if err:
+            return err
+        self._backend.after_change(select=[new_vp], target=self)
+        return ""
+
+    @Slot(result=str)
+    def newFolder(self):
+        new_vp, err = ops.make_directory(self._cwd, "新建文件夹")
+        if err:
+            self._backend.toast.emit(err)
+            return ""
+        self._backend.after_change(select=[new_vp], target=self)
+        return new_vp
+
+    @Slot()
+    def trashSelection(self):
+        self._backend.trashPaths(self.selectionVpaths())
+
+    @Slot()
+    def deleteSelection(self):
+        self._backend.deletePaths(self.selectionVpaths())
+
+    @Slot()
+    def apply_cut(self):
+        """把「正在剪切」的路径同步给模型（半透明显示）。"""
+        self._model.set_cut(sorted(self._backend.cutVpaths()))
+
+    @Slot(result="QVariantList")
+    def selectedVpaths(self):
+        """QML 侧（右键菜单、复制路径）取选中项用。"""
+        return self.selectionVpaths()
+
+    @Slot(str, result=str)
+    def nameOf(self, vp):
+        """按 vpath 取当前显示名（行内重命名要预填）。"""
+        info = self._by_vpath.get(vp)
+        if info:
+            return info.get("name", "")
+        # 扫描还没回来（刚新建的目录、刚搬进来的文件）时按 vpath 末段兜底，
+        # 否则改名会拿到空串直接放弃，表现是「新建后不进入改名」。
+        return vpath.basename(vp)
+
+    @Slot("QVariantList")
+    def selectPaths(self, vpaths):
+        """写操作完成后选中一批路径；扫描还没回来就先记着。"""
+        self._pending_select = [str(v) for v in (vpaths or [])]
+        if not self._busy:
+            self._apply_pending_select()
+
+    def _apply_pending_select(self):
+        wanted = [vp for vp in self._pending_select if self._model.row_of(vp) >= 0]
+        self._pending_select = []
+        if not wanted:
+            return
+        self._selected = set(wanted)
+        self._model.set_selected(self._selected)
+        self.selectedCountChanged.emit()
+        self._update_info()
+        self.focusRequested.emit(wanted[-1], self._model.row_of(wanted[-1]))
+
+    def _prune_selection(self):
+        """删除/移动后把已经不存在的选中项剔掉，别让信息条挂着幽灵条目。"""
+        if not self._selected:
+            return
+        alive = {vp for vp in self._selected if vp in self._by_vpath}
+        if alive == self._selected:
+            return
+        self._selected = alive
+        self._model.set_selected(alive)
+        self.selectedCountChanged.emit()
+        self._update_info()
+
     # 常用位置已上移到 FileManagerBackend.standardLocations() -> filecore/locations.py
     # （收藏栏是页面级的，不该左右面板各算一份）。
 
@@ -402,6 +527,7 @@ class FilePanel(QObject):
             self._set_status(f"仅显示前 {listing.MAX_ITEMS} 项")
         else:
             self._set_status("")
+        self._prune_selection()
         self._apply_view()
         return True
 
@@ -413,7 +539,9 @@ class FilePanel(QObject):
         if len(rows) <= listing.CHUNK_THRESHOLD:
             self._model.set_entries(rows)
             self._model.set_selected(self._selected)
+            self._model.set_cut(sorted(self._backend.cutVpaths()))
             self.countsChanged.emit()
+            self._apply_pending_select()
         else:
             self._model.set_entries([])
             self._pending = [rows[i:i + listing.CHUNK_SIZE]
@@ -428,7 +556,9 @@ class FilePanel(QObject):
             self._batch.start(0)
         else:
             self._model.set_selected(self._selected)
+            self._model.set_cut(sorted(self._backend.cutVpaths()))
             self.countsChanged.emit()
+            self._apply_pending_select()
 
     def _update_info(self):
         if len(self._selected) != 1:
@@ -472,6 +602,8 @@ class FileManagerBackend(QObject):
     previewActiveChanged = Signal()
     showHiddenChanged = Signal()
     workScheduleChanged = Signal()
+    clipboardChanged = Signal()
+    opChanged = Signal()
 
     def __init__(self, app_home, parent=None):
         super().__init__(parent)
@@ -494,6 +626,18 @@ class FileManagerBackend(QObject):
         self._local_source = LocalSource()
         self._busy = False
         self._progress = 0
+        # ---- M1c 写操作状态 ----
+        self._clip: dict = {"operation": "copy", "vpaths": [], "ignored": 0}
+        self._clip_cut: set[str] = set()
+        self._op_job = ""
+        self._op_busy = False
+        self._op_text = ""
+        self._op_select: list[str] = []
+        self._op_target = None
+        self._op_on_done = None
+        self._tick_job = ""
+        self._clip_ignore = 0.0
+        self._last_tick = 0.0
 
         self._left = FilePanel("left", self, self)
         self._right = FilePanel("right", self, self)
@@ -517,6 +661,13 @@ class FileManagerBackend(QObject):
         self._load_state()
         self._left.refresh()
         self._right.refresh()
+
+        # 剪贴板是全局资源：别的程序一改，「剪切」语义就失效了，必须重新读一遍。
+        # X11 下 dataChanged 由我们自己写入时也会触发，_on_clipboard_changed 会
+        # 用内容比对避免把刚设好的 cut 状态又冲掉。
+        QGuiApplication.clipboard().dataChanged.connect(self._on_clipboard_changed)
+        self._runner.progress.connect(self._on_op_progress, Qt.QueuedConnection)
+        self._clip = self._read_clipboard()
 
     # ---------------- Properties ----------------
     @Property(QObject, constant=True)
@@ -601,6 +752,32 @@ class FileManagerBackend(QObject):
         """预览偏好（目前只有 pdfQuality）。QML 只读，改档走 setPdfQuality。"""
         return dict(self._preview_prefs)
 
+    @Property("QVariantMap", notify=clipboardChanged)
+    def clipboard(self):
+        """剪贴板里我们认得的文件项。QML 用它决定「粘贴」是否可点、文案写几项。"""
+        names = []
+        for v in self._clip.get("vpaths", [])[:3]:
+            try:
+                names.append(os.path.basename(vpath.to_local(v).rstrip("/")) or "/")
+            except (ValueError, TypeError):
+                continue
+        return {
+            "operation": self._clip.get("operation", "copy"),
+            "count": len(self._clip.get("vpaths", [])),
+            "names": names,
+            "ignored": int(self._clip.get("ignored", 0)),
+        }
+
+    @Property(bool, notify=opChanged)
+    def opBusy(self):
+        """写操作进行中（复制/移动/删除）。与面板自己的 busy 分开：
+        面板 busy 会盖住列表显示「正在读取」，复制时不该盖。"""
+        return self._op_busy
+
+    @Property(str, notify=opChanged)
+    def opText(self):
+        return self._op_text
+
     # ---------------- Slots ----------------
     @Slot(str)
     def setActiveSide(self, side):
@@ -612,6 +789,322 @@ class FileManagerBackend(QObject):
     @Slot()
     def toggleActiveSide(self):
         self.setActiveSide("right" if self._active_side == "left" else "left")
+
+    # ---------------- 写操作（M1c） ----------------
+    # 剪贴板是「系统级」的：同时写 text/uri-list 与 x-special/gnome-copied-files，
+    # 麒麟的 Peony / Nautilus 都能互传；粘贴时反过来优先读 gnome 格式（它带 cut 语义）。
+    def cutVpaths(self) -> set[str]:
+        """正在剪切的路径（面板据此把行画成半透明）。QML 不直接调。"""
+        return set(self._clip_cut)
+
+    def _read_clipboard(self) -> dict:
+        md = QGuiApplication.clipboard().mimeData()
+        data = {}
+        if md is not None:
+            for mime in (ops.MIME_GNOME, ops.MIME_URI, ops.MIME_TEXT):
+                try:
+                    if md.hasFormat(mime):
+                        data[mime] = bytes(md.data(mime))
+                except (RuntimeError, TypeError):
+                    continue
+        return ops.parse(data)
+
+    def _on_clipboard_changed(self):
+        # 自己刚写进去的那一下会同步发 dataChanged，X11 上此刻读回来还可能是空的，
+        # 用时间窗挡掉，否则「剪切」的半透明状态会瞬间消失。
+        if time.monotonic() < self._clip_ignore:
+            return
+        clip = self._read_clipboard()
+        if (clip["operation"] == self._clip.get("operation") and
+                clip["vpaths"] == self._clip.get("vpaths")):
+            return
+        self._clip = clip
+        self._clip_cut = set(clip["vpaths"]) if clip["operation"] == "cut" else set()
+        self.clipboardChanged.emit()
+        for panel in self._panels.values():
+            panel.apply_cut()
+
+    @Slot("QVariantList", bool)
+    def clipboardCopy(self, vpaths, cut):
+        picked = [str(v) for v in (vpaths or []) if v]
+        if not picked:
+            self.toast.emit("没有选中项目")
+            return
+        blob = ops.encode("cut" if cut else "copy", picked)
+        if not blob:
+            self.toast.emit("这些项目无法复制（压缩包内条目暂不支持）")
+            return
+        mime = QMimeData()
+        for key, data in blob.items():
+            mime.setData(key, QByteArray(data))
+        self._clip_ignore = time.monotonic() + 0.6
+        QGuiApplication.clipboard().setMimeData(mime)
+        self._clip = {"operation": "cut" if cut else "copy",
+                      "vpaths": list(picked), "ignored": 0}
+        self._clip_cut = set(picked) if cut else set()
+        self.clipboardChanged.emit()
+        for panel in self._panels.values():
+            panel.apply_cut()
+        self.toast.emit(("已剪切 %d 项" if cut else "已复制 %d 项") % len(picked))
+
+    @Slot()
+    def pasteInto(self, panel):
+        if self._op_busy:
+            self.toast.emit("正在处理上一个操作，请稍候")
+            return
+        clip = self._read_clipboard()
+        if not clip["vpaths"]:
+            self.toast.emit("剪贴板里没有可粘贴的文件")
+            return
+        move = clip["operation"] == "cut"
+        src = list(clip["vpaths"])
+        dest = panel.cwd
+
+        def job(cancel=None):
+            return ops.run_transfer(src, dest, move=move, cancel=cancel,
+                                    tick=self._make_tick())
+
+        self._start_op("正在移动…" if move else "正在复制…", panel, job,
+                       lambda result: self._after_transfer(
+                           result, panel, move, verb="已移动" if move else "已粘贴"))
+
+    @Slot("QVariantList")
+    def trashPaths(self, vpaths):
+        local = self._local_paths(vpaths)
+        if not local:
+            return
+        if self._op_busy:
+            self.toast.emit("正在处理上一个操作，请稍候")
+            return
+
+        def job(cancel=None):
+            return {"trash": ops.trash_paths(local)}
+
+        self._start_op("正在移到回收站…", None, job, self._after_trash)
+
+    @Slot("QVariantList")
+    def deletePaths(self, vpaths):
+        local = self._local_paths(vpaths)
+        if not local:
+            return
+        if self._op_busy:
+            self.toast.emit("正在处理上一个操作，请稍候")
+            return
+
+        def job(cancel=None):
+            result = {"ok": 0, "failed": []}
+            for path in local:
+                if cancel is not None and cancel.is_cancelled():
+                    result["cancelled"] = True
+                    break
+                item = ops.permanent_delete(path)
+                if item.get("ok"):
+                    result["ok"] += 1
+                else:
+                    result["failed"].append({"name": os.path.basename(path),
+                                             "error": item.get("error", "删除失败")})
+            return result
+
+        self._start_op("正在删除…", None, job, self._after_delete)
+
+    @Slot()
+    def cancelOp(self):
+        if not self._op_job:
+            return
+        self._runner.cancel(self._op_job)
+        self.toast.emit("正在取消…")
+
+    def after_change(self, select=None, target=None):
+        """同步操作（改名 / 新建文件夹）完成后：刷新两端并选中结果。"""
+        for panel in self._panels.values():
+            panel.refresh()
+        if select:
+            owner = target or self._panels.get(self._active_side) or self._left
+            owner.selectPaths(select)
+
+    def _local_paths(self, vpaths) -> list[str]:
+        out = []
+        for v in vpaths or []:
+            try:
+                out.append(vpath.to_local(str(v)))
+            except (ValueError, TypeError):
+                continue
+        return out
+
+    def _make_tick(self):
+        """给工作线程用的进度节流器：最多 10Hz，且只在百分比变化时发。"""
+        def tick(done, total):
+            if total > 0:
+                pct = int(done * 100 / total)
+            else:
+                pct = 100 if done else 0
+            now = time.monotonic()
+            if pct < 100 and now - self._last_tick < 0.1:
+                return
+            self._last_tick = now
+            job_id = self._tick_job
+            if not job_id:
+                return
+            try:
+                self._runner.progress.emit(job_id, max(0, min(100, pct)))
+            except RuntimeError:
+                pass
+        return tick
+
+    @Slot(str, int)
+    def _on_op_progress(self, job_id, pct):
+        if not job_id or job_id != self._op_job:
+            return
+        pct = max(0, min(100, int(pct)))
+        if pct != self._progress:
+            self._progress = pct
+            self.progressChanged.emit()
+
+    def _start_op(self, label, target, job_fn, on_done):
+        if self._op_busy:
+            self.toast.emit("正在处理上一个操作，请稍候")
+            return ""
+        self._op_text = label
+        self._op_busy = True
+        self._op_target = target
+        self._op_on_done = on_done
+        self._progress = 0
+        self.opChanged.emit()
+        self.progressChanged.emit()
+        # job id 只有 submit 之后才知道，而工作线程可能立刻开始刷进度：
+        # tick 里读 self._tick_job，早于赋值的那一帧会被丢掉（都是 0%，无影响）。
+        self._tick_job = ""
+        job = self._runner.submit("op", job_fn)
+        self._op_job = job
+        self._tick_job = job
+        return job
+
+    def _reset_progress(self):
+        if self._op_busy:
+            return
+        if self._progress != 0:
+            self._progress = 0
+            self.progressChanged.emit()
+
+    def _after_transfer(self, result, panel, move, verb=""):
+        if not isinstance(result, dict):
+            self.toast.emit("操作失败")
+            return
+        ok = int(result.get("ok", 0))
+        failed = result.get("failed") or []
+        paths = result.get("paths") or []
+        for p in self._panels.values():
+            p.refresh()
+        if paths and not move:
+            # 复制：选中目标面板里的新项，方便接着操作
+            panel.selectPaths(paths)
+        if move and ok:
+            # 剪切粘贴后源已经不在原位，剪贴板状态得重读（parse 会过滤掉不存在的）
+            self._clip_ignore = 0.0
+            self._clip = self._read_clipboard()
+            self._clip_cut = {v for v in self._clip_cut
+                              if os.path.lexists(self._safe_local(v))}
+            if self._clip.get("operation") != "cut":
+                self._clip_cut = set()
+            self.clipboardChanged.emit()
+            for p in self._panels.values():
+                p.apply_cut()
+        parts = []
+        if ok:
+            # verb 由调用方给：粘贴就是「已粘贴」，别一律说「已复制」
+            parts.append(("%s %d 项" % (verb or ("已移动" if move else "已复制"), ok)))
+        renamed = int(result.get("renamed", 0))
+        if renamed:
+            parts.append("%d 项同名已加序号" % renamed)
+        if failed:
+            parts.append("%d 项失败：%s" % (len(failed), failed[0].get("error", "")))
+        if result.get("cancelled"):
+            parts.append("已取消")
+        self.toast.emit("，".join(parts) or "没有变化")
+
+    def _after_trash(self, result):
+        info = (result or {}).get("trash") or {}
+        self._after_delete({"ok": info.get("ok", 0), "failed": info.get("failed") or []},
+                           verb="移到回收站")
+
+    def _after_delete(self, result, verb="删除"):
+        ok = int((result or {}).get("ok", 0))
+        failed = (result or {}).get("failed") or []
+        for p in self._panels.values():
+            p.refresh()
+        parts = []
+        if ok:
+            parts.append("已%s %d 项" % (verb, ok))
+        if failed:
+            parts.append("%d 项失败：%s" % (len(failed), failed[0].get("error", "")))
+        if (result or {}).get("cancelled"):
+            parts.append("已取消")
+        self.toast.emit("，".join(parts) or "没有可处理的项")
+
+    @staticmethod
+    def _safe_local(vp) -> str:
+        try:
+            return vpath.to_local(str(vp))
+        except (ValueError, TypeError):
+            return ""
+
+    # ---------------- Slots：系统集成 ----------------
+    @Slot(str, result=bool)
+    def openDefault(self, vp):
+        """用桌面默认程序打开。目录也走这条（交给文件管理器）。"""
+        local = self._safe_local(vp)
+        if not local or not os.path.lexists(local):
+            self.toast.emit("文件不存在")
+            return False
+        if QDesktopServices.openUrl(QUrl.fromLocalFile(local)):
+            return True
+        self.toast.emit("没有找到能打开它的程序")
+        return False
+
+    @Slot(str, result=bool)
+    def openTerminal(self, cwd_vpath):
+        """在终端里打开这个目录。优先系统终端，逐个试，找不到给明确的 Toast。"""
+        local = self._safe_local(cwd_vpath) or HOME
+        if not os.path.isdir(local):
+            local = os.path.dirname(local)
+        if sys.platform == "darwin":
+            try:
+                subprocess.Popen(["open", "-a", "Terminal", local],
+                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                 start_new_session=True)
+                return True
+            except OSError:
+                pass
+        for exe, tail in _TERMINALS:
+            path = shutil.which(exe)
+            if not path:
+                continue
+            argv = [arg.format(dir=local) for arg in tail]
+            try:
+                subprocess.Popen([path, *argv], cwd=local, start_new_session=True,
+                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                return True
+            except OSError:
+                continue
+        self.toast.emit("没有找到可用的终端程序")
+        return False
+
+    @Slot("QVariantList", result=int)
+    def copyPathText(self, vpaths):
+        texts = self._local_paths(vpaths)
+        if not texts:
+            self.toast.emit("没有选中项目")
+            return 0
+        self._clip_ignore = time.monotonic() + 0.6
+        QGuiApplication.clipboard().setText("\n".join(texts))
+        # 剪贴板现在只有纯文本，文件语义要跟着清掉，否则菜单还写着「粘贴 3 项」
+        self._clip = {"operation": "copy", "vpaths": [], "ignored": 0}
+        self._clip_cut = set()
+        self.clipboardChanged.emit()
+        for panel in self._panels.values():
+            panel.apply_cut()
+        self.toast.emit("已复制 %d 条路径" % len(texts))
+        return len(texts)
 
     @Slot(result=QObject)
     def active(self):
@@ -824,6 +1317,28 @@ class FileManagerBackend(QObject):
 
     @Slot(str, bool, "QVariantList")
     def _on_job_finished(self, job_id, ok, payload):
+        if job_id and job_id == self._op_job:
+            result = payload[0] if payload else {}
+            self._op_job = ""
+            self._tick_job = ""
+            self._op_busy = False
+            self._op_text = ""
+            self._op_target = None
+            self._progress = 100
+            self.opChanged.emit()
+            self.progressChanged.emit()
+            on_done = self._op_on_done
+            self._op_on_done = None
+            try:
+                if ok:
+                    if on_done is not None:
+                        on_done(result if isinstance(result, dict) else {})
+                else:
+                    self.toast.emit("操作失败：%s" % (result or "未知错误"))
+            finally:
+                # 进度条别一直顶着 100%，收尾后归零（下一次操作会重新从 0 开始）
+                QTimer.singleShot(700, self._reset_progress)
+            return
         for panel in self._panels.values():
             if panel.handle_result(job_id, ok, payload):
                 break
