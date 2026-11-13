@@ -121,7 +121,7 @@ TMPDIR=$PWD/.tmp WORKSPACE_HOME=$PWD/.tmp/home QT_QPA_PLATFORM=offscreen \
 注意：`WS_SMOKE` 的退出码**不能单独判活**（QML 组件加载失败时也可能返回 0），
 必须同时检查日志里没有 `failed to load component` / `Cannot assign` / `ReferenceError`。
 
-## 预览窗口的五个坑（改之前先读）
+## 预览窗口的六个坑（改之前先读）
 
 1. **拖动必须用 `mapToGlobal` 换算的屏幕坐标**，不能用 `mouse.x` 局部增量。无边框窗口自己
    跟着鼠标移动时，同一个屏幕位置对应的局部坐标会跟着变，「按下时的局部差值」里已经扣掉了
@@ -150,6 +150,14 @@ TMPDIR=$PWD/.tmp WORKSPACE_HOME=$PWD/.tmp/home QT_QPA_PLATFORM=offscreen \
 5. **PDF 密码必须在 `load()` 之前给**（QtPdf 是 `setPassword`，PyMuPDF 是 `authenticate`）：
    加载失败后再设不重试，状态永远停在错误上。所以解锁 = 整份重开一次，不能“就地改密码接着用”。
    QtPdf 对「没给密码」和「密码错」报同一个 `IncorrectPassword`，想区分只能看自己有没有给过密码。
+6. **item 隐藏不等于交出键盘焦点**：StackLayout 切页只改子项的 `visible`，Qt 不保证把
+   `activeFocus` 从隐藏的列表上收回（离屏平台会收回，麒麟/X11 上会留在原地）。表现是
+   「按空格关掉预览 → 点侧栏切到待办 → 再按空格，预览又弹出来」，只有点到某个输入框才恢复。
+   修法：`FmPanel` 加一个 `keysEnabled`（= `pageActive && !settingsOpen`），`Keys.onPressed`
+   第一行就挡，`keysEnabled` 变 false 时 `list.focus = false`。切回页面要重新聚焦，但**不能
+   在 `onPageActiveChanged` 里直接 `forceActiveFocus()`** —— StackLayout 的 `visible` 是布局
+   阶段才置位的，那会儿 item 还不可见，调用会被丢掉（实测切回来 `focus` 仍是 false，空格没反应）。
+   要写在 `onVisibleChanged` 里并套一层 `Qt.callLater`。
 
 ## PDF 渲染（换渲染器之前先读）
 

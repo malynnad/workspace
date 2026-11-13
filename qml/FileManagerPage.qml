@@ -51,6 +51,16 @@ Item {
 
     // 切到别的模块时把浮窗收掉，免得状态是 open 但页面不可见。
     onPageActiveChanged: { if (!root.pageActive) files.preview.close() }
+    // 切回本页把键盘交还给列表。不能放在 onPageActiveChanged 里直接调：
+    // StackLayout 的 visible 是布局阶段才真正置位的，那会儿 forceActiveFocus 会被
+    // 「item 还不可见」挡掉（实测切回来列表仍然 focus=false，空格没反应）。
+    onVisibleChanged: {
+        if (root.visible && root.pageActive) Qt.callLater(root.activeFm().focusList)
+    }
+    // 设置面板收起后同理交还（展开期间列表已经放开键盘，见 keysEnabled）。
+    onSettingsOpenChanged: {
+        if (!root.settingsOpen && root.pageActive) Qt.callLater(root.activeFm().focusList)
+    }
 
     ColumnLayout {
         anchors.fill: parent
@@ -77,6 +87,7 @@ Item {
                 panel: files.left
                 side: "left"
                 active: files.activeSide === "left"
+                keysEnabled: root.pageActive && !root.settingsOpen
                 Layout.preferredWidth: root.leftW
                 Layout.minimumWidth: root.panelMin
                 Layout.fillHeight: true
@@ -120,6 +131,7 @@ Item {
                 panel: files.right
                 side: "right"
                 active: files.activeSide === "right"
+                keysEnabled: root.pageActive && !root.settingsOpen
                 Layout.fillWidth: true              // 唯一 fillWidth 子项，吸收剩余宽度
                 Layout.minimumWidth: root.panelMin
                 Layout.fillHeight: true

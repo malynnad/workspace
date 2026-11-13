@@ -14,6 +14,10 @@ Item {
     property bool addressFocused: false
     property bool filterFocused: false
     property string currentVpath: ""
+    // 页面是否拥有键盘：文件管理页不可见、或设置面板展开时为 false。
+    // Qt 不保证 item 变不可见就把键盘焦点交还（离屏会清、麒麟/X11 上会留在原地），
+    // 隐藏的列表继续吃键 —— 表现就是「按空格关了预览、切到待办再按空格，预览又弹出来」。
+    property bool keysEnabled: true
     signal activated()
 
     readonly property int colSize: 64
@@ -93,7 +97,16 @@ Item {
     }
 
     function focusList() {
+        // 页面不可见时别把焦点硬塞回隐藏的列表：预览关掉（onClosed）可能就发生在
+        // 刚切页的那一刻，focusList 会把焦点从新页面抢回来。
+        if (!root.keysEnabled) return
         list.forceActiveFocus()
+    }
+
+    // 失去键盘资格时主动放开列表焦点。不在恢复时抢焦点：切回页面由页面自己决定
+    // （FileManagerPage.onVisibleChanged 里 callLater 调 focusList），免得跟地址栏/过滤框打架。
+    onKeysEnabledChanged: {
+        if (!root.keysEnabled) list.focus = false
     }
 
     function statusText() {
@@ -377,6 +390,9 @@ Item {
                     }
 
                     Keys.onPressed: function(event) {
+                        // 页面不拥有键盘（切到别的模块 / 设置面板展开）时一个键都不接。
+                        // 这是兜底：正常情况下 keysEnabled 变化会把 list.focus 放掉。
+                        if (!root.keysEnabled) return
                         // 浮窗打开时所有键交给页面级预览 Shortcut，
                         // 否则 ↑↓ / 空格 / 回车会同时改列表选中或导航目录。
                         if (files.preview.open) return
