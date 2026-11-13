@@ -71,6 +71,14 @@ Item {
     function activePanel() { return files.activeSide === "left" ? files.left : files.right }
     function activeFm() { return files.activeSide === "left" ? leftPanel : rightPanel }
 
+    // Ctrl+Enter：活动面板的选中项交给系统默认程序打开（多选时只开第一个，
+    // 跟桌面文件管理器一致，免得一口气拉起一堆程序）。
+    function openSelectionExternally() {
+        var picked = root.activePanel().selectedVpaths()
+        if (picked.length > 0)
+            files.openDefault(picked[0])
+    }
+
     // 切到别的模块时把浮窗收掉，免得状态是 open 但页面不可见。
     onPageActiveChanged: { if (!root.pageActive) files.preview.close() }
     // 切回本页把键盘交还给列表。不能放在 onPageActiveChanged 里直接调：
@@ -326,6 +334,19 @@ Item {
         sequence: "Ctrl+Shift+N"
         enabled: root.shortcutOk
         onActivated: root.activeFm().createFolder()
+    }
+    // 「打开」= 交给系统默认程序，跟右键菜单里那一项同一语义。
+    // Enter 留给列表自己（目录进入 / 文件开浮窗预览），两者分工不重叠。
+    // Return 是主键盘回车、Enter 是小键盘，两个都要接。
+    Shortcut {
+        sequence: "Ctrl+Return"
+        enabled: root.shortcutOk
+        onActivated: root.openSelectionExternally()
+    }
+    Shortcut {
+        sequence: "Ctrl+Enter"
+        enabled: root.shortcutOk
+        onActivated: root.openSelectionExternally()
     }
     // 菜单开着时 Esc 只关菜单（主窗口那条 Esc 的门控是 settingsPanel.visible，不会打架）
     Shortcut {

@@ -33,6 +33,11 @@ Item {
     // 焦点就被顶掉，被当成「点了别处」自动提交），见 onFocusRequested。
     property string pendingNewFolder: ""
 
+    // 右键菜单的目标快照（菜单弹出那一刻的选中项）。菜单项点击发生在几百毫秒后，
+    // 期间任何一次重扫/聚焦变化都不该改变这次操作的对象 —— 详见 showMenu。
+    property var menuTargets: []
+    property string menuTarget: ""
+
     readonly property int colSize: 64
     readonly property int colKind: 60
     readonly property int colTime: 96
@@ -137,6 +142,15 @@ Item {
 
     function showMenu(kind, sceneX, sceneY) {
         root.activated()
+        // 把「这次操作的对象」在菜单弹出的一刻冻下来。菜单是异步的（人要移动鼠标、
+        // 中间可能来一次重扫），点菜单项时再去读 panel.selection 就未必还是右键的那批了。
+        if (kind === "item") {
+            root.menuTargets = root.selectedVpaths()
+            root.menuTarget = root.menuTargets.length === 1 ? root.menuTargets[0] : ""
+        } else {
+            root.menuTargets = []
+            root.menuTarget = ""
+        }
         var items = kind === "item" ? root.buildItemMenu() : root.buildEmptyMenu()
         if (items.length > 0)
             root.menuRequested(root, items, sceneX, sceneY)
@@ -147,20 +161,20 @@ Item {
         if (!root.panel)
             return
         switch (id) {
+        case "preview":
+            if (root.menuTarget !== "")
+                files.preview.request(root.menuTarget)
+            break
         case "open":
-            if (root.currentVpath !== "")
-                root.panel.activate(root.currentVpath)
+            if (root.menuTarget !== "")
+                files.openDefault(root.menuTarget)
             break
-        case "defaultApp":
-            if (root.currentVpath !== "")
-                files.openDefault(root.currentVpath)
-            break
-        case "copy": root.panel.copySelection(); break
-        case "cut": root.panel.cutSelection(); break
+        case "copy": files.clipboardCopy(root.menuTargets, false); break
+        case "cut": files.clipboardCopy(root.menuTargets, true); break
         case "paste": root.panel.paste(); break
-        case "rename": root.renameSelected(); break
-        case "trash": root.panel.trashSelection(); break
-        case "copyPath": files.copyPathText(root.selectedVpaths()); break
+        case "rename": root.beginRename(root.menuTarget); break
+        case "trash": files.trashPaths(root.menuTargets); break
+        case "copyPath": files.copyPathText(root.menuTargets); break
         case "newFolder": root.createFolder(); break
         case "selectAll": root.panel.selectAll(); break
         case "refresh": root.panel.refresh(); break
@@ -177,8 +191,8 @@ Item {
         var clipCount = files.clipboard.count
         return [
             { header: true, label: title },
-            { label: "打开", shortcut: "Enter", enabled: single, action: "open" },
-            { label: "用默认程序打开", enabled: single, action: "defaultApp" },
+            { label: "预览", shortcut: "Space", enabled: single, action: "preview" },
+            { label: "打开", shortcut: "Ctrl+Enter", enabled: single, action: "open" },
             { separator: true },
             { label: "复制", shortcut: "Ctrl+C", action: "copy" },
             { label: "剪切", shortcut: "Ctrl+X", action: "cut" },
@@ -647,7 +661,8 @@ Item {
                             event.accepted = true
                             return
                         }
-                        if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) {
+                        if ((event.key === Qt.Key_Return || event.key === Qt.Key_Enter)
+                                && !(event.modifiers & Qt.ControlModifier)) {
                             if (root.currentVpath !== "") root.panel.activate(root.currentVpath)
                             event.accepted = true
                         } else if (event.key === Qt.Key_Backspace) {
@@ -671,7 +686,12 @@ Item {
                     z: 20
                     acceptedButtons: Qt.RightButton
                     onPressed: function(mouse) {
-                        var row = list.indexAt(mouse.x, mouse.y)
+                        // indexAt 吃的是**内容坐标**，而 mouse.x/y 是视口坐标：列表滚过
+                        // 之后两者差一个 contentY，直接喂会让命中行整体上移
+                        // contentY/rowH 行（麒麟机上的表现：右键第 14 个，复制到的是
+                        // 第 8、9 个）。先映射到 contentItem 再取行号。
+                        var pos = mapToItem(list.contentItem, mouse.x, mouse.y)
+                        var row = list.indexAt(pos.x, pos.y)
                         var p = mapToItem(null, mouse.x, mouse.y)
                         if (row >= 0) {
                             var vp = root.panel ? root.panel.vpathAt(row) : ""
