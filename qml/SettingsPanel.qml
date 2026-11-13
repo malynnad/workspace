@@ -144,6 +144,35 @@ Item {
                 }
             }
 
+            // ---- 目录自动刷新（M2）----
+            Item {
+                width: col.width
+                height: 34
+                Text {
+                    anchors.left: parent.left
+                    anchors.verticalCenter: parent.verticalCenter
+                    text: "目录自动刷新"
+                    font.pixelSize: 12
+                    color: Theme.text
+                }
+                Toggle {
+                    objectName: "autoRefreshToggle"
+                    anchors.right: parent.right
+                    anchors.verticalCenter: parent.verticalCenter
+                    checked: files.autoRefresh
+                    onToggled: function(v) { files.setAutoRefresh(v) }
+                }
+            }
+
+            Text {
+                width: col.width
+                text: "别的程序往当前目录里增删文件时自动更新列表；关掉就按 F5 手动刷新"
+                font.pixelSize: 10
+                color: Theme.textMuted
+                wrapMode: Text.Wrap
+                bottomPadding: 4
+            }
+
             // ---- 顶栏时钟 ----
             SectionLabel { text: "工作时段（顶栏倒计时）" }
 

@@ -17,8 +17,8 @@ import sys
 import time
 from pathlib import Path
 
-from PySide6.QtCore import (QByteArray, QMimeData, QObject, Property, QProcess,
-                            QTimer, Qt, QUrl, Signal, Slot)
+from PySide6.QtCore import (QByteArray, QFileSystemWatcher, QMimeData, QObject,
+                            Property, QProcess, QTimer, Qt, QUrl, Signal, Slot)
 from PySide6.QtGui import QDesktopServices, QGuiApplication
 
 import filecore
@@ -47,6 +47,89 @@ _TERMINALS = [
     ("kitty", ["--directory", "{dir}"]),
     ("xterm", []),
 ]
+
+
+class CwdWatcher(QObject):
+    """监听若干目录的「条目变化」（M2 目录自动刷新）。
+
+    Linux 下 QFileSystemWatcher 走 inotify，对目录只报**条目增删改名**（往里写文件内容
+    不报），正好是重扫列表需要的信号，成本是每个目录一个 watch。
+
+    为什么自己再包一层防抖 + 最小间隔：
+    * 解压、批量拷入这类操作会连着打出几十个 directoryChanged，不合并就是几十次全目录
+      重扫 —— 8GB 的麒麟机会直接卡住；
+    * 扫描本身是异步的，间隔太短会不停 cancel 上一轮扫描，大目录永远扫不完。所以
+      两次刷新之间强制留 `MIN_GAP_MS`，并且调用方还会在 busy 时跳过。
+
+    只监听当前目录、**不递归**：递归 watch 一个几万文件的工程目录会吃光 inotify 配额。
+    """
+
+    changed = Signal(str)          # 参数：发生变化的本地绝对路径
+
+    DEBOUNCE_MS = 350
+    MIN_GAP_MS = 800
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._watcher = QFileSystemWatcher(self)
+        self._watcher.directoryChanged.connect(self._on_dir_changed)
+        self._paths: dict[str, str] = {}       # 本地路径 -> 原样的 vpath（回调要还回去）
+        self._pending: set[str] = set()
+        self._last_flush = 0.0
+        self._timer = QTimer(self)
+        self._timer.setSingleShot(True)
+        self._timer.setInterval(self.DEBOUNCE_MS)
+        self._timer.timeout.connect(self._flush)
+
+    def set_paths(self, mapping):
+        """把监听的目录整体换掉。mapping: {本地路径: vpath}。
+
+        逐个 diff 而不是 clear + 重加：clear 会造成一小段监听真空，正好错过
+        「切目录的同时别人往里写了东西」。
+        """
+        want = {os.path.abspath(p): v for p, v in (mapping or {}).items() if p}
+        for path in list(self._paths):
+            if path not in want:
+                self._watcher.removePath(path)
+                del self._paths[path]
+                self._pending.discard(path)
+        for path, vp in want.items():
+            self._paths[path] = vp
+            if path not in self._watcher.directories():
+                self._watcher.addPath(path)
+
+    def clear(self):
+        self.set_paths({})
+        self._pending.clear()
+        self._timer.stop()
+
+    def watched(self):
+        return sorted(self._paths)
+
+    # ---------------- 内部 ----------------
+    def _on_dir_changed(self, path):
+        if path not in self._paths:
+            return
+        self._pending.add(path)
+        # 按下葫芦浮起瓢式地续期：持续有变化就一直往后推，直到安静 350ms 才刷一次
+        self._timer.start()
+
+    def _flush(self):
+        if not self._pending:
+            return
+        now = time.monotonic()
+        wait = (self._last_flush + self.MIN_GAP_MS / 1000.0) - now
+        if wait > 0:
+            # 还在冷却期：把这一批留着，冷却结束再来一次（不是丢弃）
+            self._timer.start(int(wait * 1000) + 10)
+            return
+        batch = sorted(self._pending)
+        self._pending.clear()
+        self._last_flush = now
+        for path in batch:
+            vp = self._paths.get(path)
+            if vp:
+                self.changed.emit(vp)
 
 
 class FilePanel(QObject):
@@ -110,6 +193,11 @@ class FilePanel(QObject):
     def currentName(self):
         text = vpath.display(self._cwd).rstrip("/")
         return text.split("/")[-1] or "/"
+
+    @Property(str, constant=True)
+    def side(self):
+        """'left' / 'right'。QML 收到全局信号（如自动刷新）时用它对号入座。"""
+        return self._side
 
     @Property(list, notify=historyChanged)
     def history(self):
@@ -481,6 +569,8 @@ class FilePanel(QObject):
         self._update_info()
         self._backend._schedule_save()
         self._scan()
+        # 换了目录就把 watch 挪过去（只挂当前这一层，不递归）
+        self._backend._sync_watch()
 
     def _scan(self):
         if self._job:
@@ -516,6 +606,9 @@ class FilePanel(QObject):
             return True                                  # 过期结果直接丢弃
         err = result.get("err")
         rows = result.get("rows") or []
+        # 与上一轮一字不差（自动刷新最常撞上这种空转：自己写盘引起的二次事件）。
+        # 判定要在覆盖 _all_rows 之前做。
+        same = (rows == self._all_rows) and not self._pending
         self._all_rows = rows
         self._by_vpath = {r["vpath"]: r for r in rows if r.get("vpath")}
         self._total = len(rows)
@@ -528,6 +621,13 @@ class FilePanel(QObject):
         else:
             self._set_status("")
         self._prune_selection()
+        if same and not err:
+            # 内容没变就别 reset 模型：set_entries 会让 ListView 重建全部委托，
+            # 视觉上是「列表闪一下」，滚动位置也可能抖。这里只同步选中态。
+            self._model.set_selected(self._selected)
+            self._apply_pending_select()
+            self._update_info()
+            return True
         self._apply_view()
         return True
 
@@ -604,6 +704,8 @@ class FileManagerBackend(QObject):
     workScheduleChanged = Signal()
     clipboardChanged = Signal()
     opChanged = Signal()
+    autoRefreshChanged = Signal()
+    autoRefreshRequested = Signal(str)      # 参数是 side：'left' / 'right'
 
     def __init__(self, app_home, parent=None):
         super().__init__(parent)
@@ -638,6 +740,15 @@ class FileManagerBackend(QObject):
         self._tick_job = ""
         self._clip_ignore = 0.0
         self._last_tick = 0.0
+        # ---- M2 目录自动刷新 ----
+        self._auto_refresh = True
+        # 自己写盘时 watcher 也会触发：复制/删除/新建之后 after_change 已经刷过一次，
+        # 这时候再来一轮就会把刚选中的结果冲掉。用这个时间戳压掉自产噪音。
+        self._watch_ignore_until = 0.0
+        self._watch_retry: set[str] = set()    # 被 suppress 窗口压住、等会儿要补刷的目录
+        self._deferred_side: set[str] = set()  # 面板正在扫描，等它闲下来再刷
+        self._watcher = CwdWatcher(self)
+        self._watcher.changed.connect(self._on_dir_changed)
 
         self._left = FilePanel("left", self, self)
         self._right = FilePanel("right", self, self)
@@ -657,10 +768,13 @@ class FileManagerBackend(QObject):
             for sig in (panel.cwdChanged, panel.historyChanged, panel.sortChanged,
                         panel.hiddenChanged):
                 sig.connect(self._schedule_save)
+            # 扫描结束时把因为 busy 压下来的自动刷新补上
+            panel.busyChanged.connect(self._flush_deferred_refresh)
 
         self._load_state()
         self._left.refresh()
         self._right.refresh()
+        self._sync_watch()
 
         # 剪贴板是全局资源：别的程序一改，「剪切」语义就失效了，必须重新读一遍。
         # X11 下 dataChanged 由我们自己写入时也会触发，_on_clipboard_changed 会
@@ -722,6 +836,11 @@ class FileManagerBackend(QObject):
     def showHidden(self):
         """是否显示点开头的隐藏文件。全局一份，左右面板同步。"""
         return self._show_hidden
+
+    @Property(bool, notify=autoRefreshChanged)
+    def autoRefresh(self):
+        """目录自动刷新：监听当前目录，外部有增删改名就重扫一次。"""
+        return self._auto_refresh
 
     @Property("QVariantMap", notify=workScheduleChanged)
     def workSchedule(self):
@@ -916,11 +1035,83 @@ class FileManagerBackend(QObject):
 
     def after_change(self, select=None, target=None):
         """同步操作（改名 / 新建文件夹）完成后：刷新两端并选中结果。"""
+        # 这次刷新是我们自己写盘引起的，watcher 随后一定还会为同一批改动报一次。
+        # 不压掉它就会出现「刚选中新建的文件夹，第二轮重扫把选中冲掉」。
+        self._suppress_watch()
         for panel in self._panels.values():
             panel.refresh()
         if select:
             owner = target or self._panels.get(self._active_side) or self._left
             owner.selectPaths(select)
+        self._sync_watch()
+
+    # ---------------- M2：目录自动刷新 ----------------
+    def _suppress_watch(self, seconds=1.5):
+        """压掉自产的文件系统事件窗口。写盘期间与之后的一小段时间内忽略 watcher。"""
+        self._watch_ignore_until = time.monotonic() + seconds
+
+    def _sync_watch(self):
+        """把两个面板的当前目录交给 watcher。
+
+        只挂 file:// 的目录：压缩包内条目（M2 的 zip:// 等）没有可 watch 的物理路径，
+        它们的「变化」只能靠重新打开压缩包，不在这套机制里。
+        """
+        if not self._auto_refresh:
+            self._watcher.clear()
+            return
+        mapping = {}
+        for panel in self._panels.values():
+            try:
+                local = vpath.to_local(panel.cwd)
+            except (ValueError, TypeError):
+                continue
+            if local and os.path.isdir(local):
+                mapping[local] = panel.cwd
+        self._watcher.set_paths(mapping)
+
+    def _on_dir_changed(self, cwd_vpath):
+        """当前目录有增删改名：请求重扫那个面板。
+
+        真正刷不刷、什么时候刷由 QML 决定（它才知道是不是正在行内改名、是不是正在
+        往地址栏打字）—— 那几个状态下列表一旦重建委托，编辑框会被顶掉。
+
+        两条「先压后补」的路径，都**不丢事件**：
+        * 自己刚写过盘的抑制窗口内 → 窗口结束后补一次（压掉的是自产噪音，
+          但窗口里万一有别人的改动，补这一次才不会漏）；
+        * 面板正在扫 → 记下来，等 busy 变 false 再发（扫到一半取消重来永远扫不完）。
+        """
+        if not self._auto_refresh:
+            return
+        delay = self._watch_ignore_until - time.monotonic()
+        if delay > 0:
+            if cwd_vpath in self._watch_retry:
+                return
+            self._watch_retry.add(cwd_vpath)
+            QTimer.singleShot(int(delay * 1000) + 20,
+                              lambda: self._retry_dir(cwd_vpath))
+            return
+        for panel in self._panels.values():
+            if panel.cwd != cwd_vpath:
+                continue
+            if panel.busy:
+                self._deferred_side.add(panel.side)
+                return
+            self.autoRefreshRequested.emit(panel.side)
+
+    def _retry_dir(self, cwd_vpath):
+        self._watch_retry.discard(cwd_vpath)
+        self._on_dir_changed(cwd_vpath)
+
+    def _flush_deferred_refresh(self):
+        """某个面板扫完了：把刚才因为 busy 压下来的刷新补发出去。"""
+        if not self._deferred_side:
+            return
+        for side in list(self._deferred_side):
+            panel = self._panels.get(side)
+            if panel is None or panel.busy:
+                continue
+            self._deferred_side.discard(side)
+            self.autoRefreshRequested.emit(side)
 
     def _local_paths(self, vpaths) -> list[str]:
         out = []
@@ -966,6 +1157,9 @@ class FileManagerBackend(QObject):
             return ""
         self._op_text = label
         self._op_busy = True
+        # 分块复制会在目标目录里反复建临时文件（.wspart），watcher 每隔几百毫秒就会
+        # 报一次；这些过程态没有刷新价值，只会跟进度条抢主线程。
+        self._suppress_watch(seconds=3.0)
         self._op_target = target
         self._op_on_done = on_done
         self._progress = 0
@@ -1189,6 +1383,20 @@ class FileManagerBackend(QObject):
     def toggleHidden(self):
         self.setShowHidden(not self._show_hidden)
 
+    @Slot(bool)
+    def setAutoRefresh(self, value):
+        """开关目录自动刷新。关掉立即释放 watch（不占 inotify 配额），打开就重新挂上。"""
+        value = bool(value)
+        if value == self._auto_refresh:
+            return
+        self._auto_refresh = value
+        if value:
+            self._sync_watch()
+        else:
+            self._watcher.clear()
+        self.autoRefreshChanged.emit()
+        self._schedule_save()
+
     @Slot(str, str, result=bool)
     def setWorkTime(self, which, text):
         """改工作时段。返回 False 表示没接受（格式不对或早于开始），QML 据此回填。
@@ -1253,6 +1461,7 @@ class FileManagerBackend(QObject):
     @Slot()
     def shutdown(self):
         """退出前排干后台扫描与预览，避免工作线程在对象销毁后继续发信号。"""
+        self._watcher.clear()
         self._left._batch.stop()
         self._right._batch.stop()
         self._preview._cancel_pending()
@@ -1275,6 +1484,7 @@ class FileManagerBackend(QObject):
             "activeSide": self._active_side,
             "leftWidth": self._left_width,
             "showHidden": self._show_hidden,
+            "autoRefresh": self._auto_refresh,
             "workSchedule": dict(self._work_schedule),
             "favorites": list(self._favorites),
             "previewWindow": dict(self._preview_window),
@@ -1293,6 +1503,7 @@ class FileManagerBackend(QObject):
         self._preview_prefs = dict(data.get("previewPrefs")
                                    or state._clean_preview_prefs(None))
         self._show_hidden = bool(data.get("showHidden", False))
+        self._auto_refresh = bool(data.get("autoRefresh", True))
         self._work_schedule = dict(data.get("workSchedule")
                                    or state._clean_work(None))
         for side in ("left", "right"):

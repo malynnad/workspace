@@ -225,6 +225,9 @@ def default_state(home: str) -> dict:
         # 全局开关（设置面板里的「显示隐藏文件」）。老版本按面板各存一份，
         # 见 load() 里的迁移。
         "showHidden": False,
+        # 目录自动刷新（M2）：外部改动后自动重扫当前目录。默认开 —— 关掉它
+        # 等于「文件管理器看不懂别人改了什么」，这是工具该有的默认行为。
+        "autoRefresh": True,
         "favorites": [],
         "previewWindow": _clean_preview_window(None),
         "previewPrefs": _clean_preview_prefs(None),
@@ -266,6 +269,8 @@ def load(path, home: str) -> dict:
     out["previewWindow"] = _clean_preview_window(data.get("previewWindow"))
     out["previewPrefs"] = _clean_preview_prefs(data.get("previewPrefs"))
     out["workSchedule"] = _clean_work(data.get("workSchedule"))
+    # 老状态文件没有这个字段 → 保持默认开，不要因为升级就悄悄关掉
+    out["autoRefresh"] = _clean_flag(data.get("autoRefresh"), True)
 
     panels = data.get("panels")
 

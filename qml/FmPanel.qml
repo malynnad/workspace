@@ -38,6 +38,17 @@ Item {
     property var menuTargets: []
     property string menuTarget: ""
 
+    // 自动刷新（M2）：目录在外部被改动后后端会请求重扫，但「正在行内改名 / 地址栏 /
+    // 过滤框」这三种状态下重建列表会把编辑框顶掉（跟「新建后进不了改名」同一个根因）。
+    // 那就先记下来，等这些状态都退出了再刷一次 —— 见下面的 Timer。
+    property bool refreshPending: false
+
+    function refreshNow() {
+        root.refreshPending = false
+        if (root.panel)
+            root.panel.refresh()
+    }
+
     readonly property int colSize: 64
     readonly property int colKind: 60
     readonly property int colTime: 96
@@ -868,4 +879,30 @@ Item {
     }
     // toast 由 FileManagerPage.qml 页面级单点接住，两个面板实例不各弹一次。
     Component.onCompleted: addressField.text = root.panel.displayPath
+
+    // ---- M2 目录自动刷新 ----
+    // 后端只负责「这个目录变了」这件事，什么时候真的重扫交给这边判断：
+    // 只有 QML 知道是不是正在行内改名、是不是正在地址栏/过滤框里打字。
+    Connections {
+        target: files
+        function onAutoRefreshRequested(side) {
+            if (!root.panel || side !== root.side)
+                return
+            if (root.renamingVpath !== "" || root.addressFocused || root.filterFocused) {
+                root.refreshPending = true
+                return
+            }
+            root.refreshNow()
+        }
+    }
+
+    // 轮询上面那几种状态何时解除（不给已有属性各加一个 onChange 处理器：
+    // 那几个 property 变化在别处已经接过了，重复定义同名处理器会被 QML 拒绝）。
+    Timer {
+        interval: 250
+        repeat: true
+        running: root.refreshPending && root.renamingVpath === ""
+                 && !root.addressFocused && !root.filterFocused
+        onTriggered: root.refreshNow()
+    }
 }

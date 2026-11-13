@@ -235,6 +235,20 @@ def _state():
         assert bad == vpath.encode_path(home), bad
         unsupported = state.validate("zip+file:///a.zip!/", home, src)
         assert unsupported == vpath.encode_path(home), unsupported
+
+        # 目录自动刷新（M2 开关）：默认开；老状态文件没这个字段时不能被升级悄悄关掉；
+        # 手改成 "true" 这种脏值回退默认（不真值转换，见 _clean_flag）
+        fresh = state.load(os.path.join(home, "absent.json"), home)
+        assert fresh["autoRefresh"] is True, fresh["autoRefresh"]
+        import json as _json
+        for raw, want in (({"version": state.VERSION}, True),
+                          ({"version": state.VERSION, "autoRefresh": "true"}, True),
+                          ({"version": state.VERSION, "autoRefresh": False}, False),
+                          ({"version": state.VERSION, "autoRefresh": True}, True)):
+            with open(cfg, "w", encoding="utf-8") as f:
+                f.write(_json.dumps(raw))
+            got = state.load(cfg, home)["autoRefresh"]
+            assert got is want, (raw, got, want)
     finally:
         shutil.rmtree(home, ignore_errors=True)
 
