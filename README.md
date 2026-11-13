@@ -45,7 +45,8 @@ python3 -m venv .venv
 - 数据库：`~/.config/workspace/workspace.db`（阶段 1 schema：log_types / log_entries / todos / templates）
 - 脚本目录：`~/.config/workspace/scripts/`（已有示例 hello.py，扔 .py/.sh 进去就出现在面板）
 - 文件管理状态：`~/.config/workspace/filemanager_state.json`（cwd / 排序 / 隐藏开关 / 面板比例 / 收藏夹 / 预览窗几何，不动 workspace.db）。`leftWidth` 是 966 基准的归一化像素（比例 = leftWidth / 966），不是屏幕像素；`previewWindow` 的 `x/y` 允许负数（副屏在主屏左侧），`ver` 是预览窗几何版本（1→2 时旧的 760×580 记录自动作废、回到半屏默认）
-- PDF 页图**不落盘**：由 `image://pdfpage/<token>/<页>/<宽>` 在工作线程里现渲、现交给 QML，内存里只留最近 5~6 页（LRU 64MB）。旧版本渲成 PNG 写 `~/.cache/workspace/pdf/`，已废弃（PNG 编码比渲染慢 4~14 倍，就是「打开慢」的根因）
+- PDF 页图**不落盘**：由 `image://pdfpage/<token>/<页>/<宽>` 在工作线程里现渲、现交给 QML，内存里只留最近 1~3 页（LRU 96MB，按清晰度档位不同）。旧版本渲成 PNG 写 `~/.cache/workspace/pdf/`，已废弃（PNG 编码比渲染慢 4~14 倍，就是「打开慢」的根因）
+- PDF 清晰度：预览窗右下角齿轮 →「预览设置」，三档写进 state.json 的 `previewPrefs.pdfQuality`（1.0 / 1.5 / 2.0，默认 1.5），改完当场重渲，重启保留
 - 加密 PDF：密码**只在内存里记本次会话**（vpath → 密码，最多 16 份，退出即失），不落盘；同一份文件再打开不再问密码
 - 测试隔离跑：`WORKSPACE_HOME=./testdata .venv/bin/python main.py`
 
@@ -59,7 +60,7 @@ python3 -m venv .venv
 | 日志→待办 | ✅ | 日志编辑器里「转为待办」按钮，content 取主题或正文首行 |
 | 脚本面板 | ✅ | 扫描 scripts 目录、QProcess 运行、输出回显、双击即跑 |
 | 模板回复 | 未做 | 表已建（templates），UI 阶段 1 后期加，可开关 |
-| 文件管理 | ✅ M1a + M1b | 常驻收藏栏（常用位置 + 可增删收藏夹）+ 等比双面板（窗口任何宽度左右等宽）+ 响应式列宽；导航 / 四列排序 / 过滤 / 隐藏文件 / 多选 / 快捷键 / 状态持久化。M1b 预览是**独立无边框窗口**：默认占屏幕右半边（1920×1080 → 960×972），可拖四边四角缩放、可拖出主窗口、始终置顶（能浮在 Excel 等其他应用上）、拖动标题栏移动、双击复位、几何记进 state.json；空格打开、Esc/空格关闭、↑↓ 切换相邻项并同步主窗口选中项；图片按宽度铺满（竖图/长页可上下滚动）、文本按宽度折行、**PDF 按页竖排滚动**（加密 PDF 弹密码框，Enter 解锁、错密码留在框里重试，同一文件本次会话只问一次）；五种预览器（图片/PDF/文本/文件夹摘要/兜底信息卡）。写操作(M1c)、压缩包(M2)、插件(M3) 未做，接口已留 |
+| 文件管理 | ✅ M1a + M1b | 常驻收藏栏（常用位置 + 可增删收藏夹）+ 等比双面板（窗口任何宽度左右等宽）+ 响应式列宽；导航 / 四列排序 / 过滤 / 隐藏文件 / 多选 / 快捷键 / 状态持久化。M1b 预览是**独立无边框窗口**：默认占屏幕右半边（1920×1080 → 960×972），可拖四边四角缩放、可拖出主窗口、始终置顶（能浮在 Excel 等其他应用上）、拖动标题栏移动、双击复位、几何记进 state.json；空格打开、Esc/空格关闭、↑↓ 切换相邻项并同步主窗口选中项；图片按宽度铺满（竖图/长页可上下滚动）、文本按宽度折行、**PDF 按页竖排滚动**（加密 PDF 弹密码框，Enter 解锁、错密码留在框里重试，同一文件本次会话只问一次）；五种预览器（图片/PDF/文本/文件夹摘要/兜底信息卡）；右下角齿轮开「预览设置」，可调 PDF 清晰度（标准 / 清晰 / 极高），改完即时生效并记住。写操作(M1c)、压缩包(M2)、插件(M3) 未做，接口已留 |
 
 ## 旧数据迁移（重装麒麟后）
 
@@ -113,7 +114,7 @@ TMPDIR=$PWD/.tmp WORKSPACE_HOME=$PWD/.tmp/home QT_QPA_PLATFORM=offscreen \
 注意：`WS_SMOKE` 的退出码**不能单独判活**（QML 组件加载失败时也可能返回 0），
 必须同时检查日志里没有 `failed to load component` / `Cannot assign` / `ReferenceError`。
 
-## 预览窗口的三个坑（改之前先读）
+## 预览窗口的五个坑（改之前先读）
 
 1. **拖动必须用 `mapToGlobal` 换算的屏幕坐标**，不能用 `mouse.x` 局部增量。无边框窗口自己
    跟着鼠标移动时，同一个屏幕位置对应的局部坐标会跟着变，「按下时的局部差值」里已经扣掉了
@@ -123,7 +124,16 @@ TMPDIR=$PWD/.tmp WORKSPACE_HOME=$PWD/.tmp/home QT_QPA_PLATFORM=offscreen \
 2. **验证拖动不能用一次大跳的合成事件**：`QTest.mouseMove` 走的是「显式局部坐标 + 显式全局
    坐标」，而真实硬件事件是投递时才把全局坐标换算成局部坐标。一次跳 60px 会被算成 120px，
    松手位置也会多算一次。要按真实事件流验证：每步小位移，局部坐标 = `虚拟光标 - 当前窗口位置`。
-3. **PDF 密码必须在 `load()` 之前给**（QtPdf 是 `setPassword`，PyMuPDF 是 `authenticate`）：
+3. **主窗口的 Esc/空格 Shortcut 要在预览窗激活时让路**：Qt 的 Shortcut 不是严格
+   per-active-window —— 预览窗是活动窗口时，主窗口那句 `Shortcut { sequence: "Esc" }`
+   照样会被激活。表现是「在预览窗里按 Esc，设置面板刚关掉、整个预览窗也跟着关了」。
+   所以预览窗把 `onActiveChanged` 回写给 `files.previewActive`，主窗口的
+   `previewKeysOk` 里带上 `!files.previewActive`。
+4. **设置面板用普通 Rectangle，不用 Popup**：Popup 一开就建自己的 focusScope（父链在
+   Overlay 层），Esc 被它按 closePolicy 吃掉之后，同一个事件还会继续冒泡到 contentRoot
+   的 Keys，那时面板已经关了、被判成「面板没开」→ 顺手关窗。Keys / Shortcut /
+   event.accepted 三种拦法都挡不住。普通 Rectangle + 全窗透明遮罩最可控。
+5. **PDF 密码必须在 `load()` 之前给**（QtPdf 是 `setPassword`，PyMuPDF 是 `authenticate`）：
    加载失败后再设不重试，状态永远停在错误上。所以解锁 = 整份重开一次，不能“就地改密码接着用”。
    QtPdf 对「没给密码」和「密码错」报同一个 `IncorrectPassword`，想区分只能看自己有没有给过密码。
 
@@ -137,6 +147,11 @@ TMPDIR=$PWD/.tmp WORKSPACE_HOME=$PWD/.tmp/home QT_QPA_PLATFORM=offscreen \
 - 想退回 QtPdf：`WORKSPACE_PDF_ENGINE=qtpdf`。代价就是 `/Widget` 签章看不见。
 - **不要在 Qt 之后再 `import pymupdf`**：实测 PySide6 6.12 已加载时这次 import 要 1170ms，
   反过来只要 120ms。`main.py` 特意把它放在 PySide6 模块之前，就是为这 1 秒。
+- **清晰度靠超采样，不靠降精度换速度**：渲染宽度 = (视口宽 - 32) × dpr × 清晰度倍率，
+  量化到 128 的倍数。默认 1.5 倍（渲 1.5 倍再缩回显示，字边更实，像素量 2.25 倍），
+  三档由预览窗右下角的齿轮面板选。上限 `RENDER_MAX=4096` 与 QML 的 `pdfDecodeW` 必须同步，
+  否则「切到极高没反应」。单页像素上限 `MAX_PX=20M`（2.0 档 A4 约 18.2M，再压就会被
+  `_clamp` 反向缩小，反而更糊）。
 - **PNG 编码是这条链路上最贵的一步**：一页扫描件渲染 34ms / PNG 编码 265ms，一页矢量文字
   7ms / 120ms。所以现在的做法是直接交 `QImage`（`QQuickAsyncImageProvider`），不编码不落盘；
   页面按「滚到哪渲到哪」按需渲染，打开文件时不做任何栅格化。

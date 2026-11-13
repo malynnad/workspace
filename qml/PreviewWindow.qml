@@ -60,10 +60,24 @@ Window {
     // PDF 页图走 image://pdfpage/<token>/<页码>/<宽度>：后端在工作线程里直接
     // 把 QImage 交给 QML，不落盘也不编码（PNG 编码比渲染本身慢 4~14 倍）。
     // 宽度同样量化到 128 的整数倍，拖窗口时只有跨档才重渲染。
+    // 清晰度档位：值与 filecore/state.py 的 PDF_QUALITY_CHOICES 必须一一对应，
+    // 传进来的值后端还会过一遍白名单清洗。
+    readonly property var qualityChoices: [
+        { "v": 1.0, "label": "标准", "desc": "1 倍 · 最省内存" },
+        { "v": 1.5, "label": "清晰", "desc": "1.5 倍 · 字边更实" },
+        { "v": 2.0, "label": "极高", "desc": "2 倍 · 最费内存" }
+    ]
+    // 清晰度倍率来自设置面板（files.previewPrefs.pdfQuality，默认 1.5）。
+    // 它是「超采样倍数」：按显示宽的 N 倍渲染，再由 Image 缩回显示，字边更实。
+    readonly property real pdfQuality: {
+        var q = (files && files.previewPrefs) ? files.previewPrefs.pdfQuality : 0
+        return (q > 0) ? q : 1.5
+    }
     readonly property int pdfDecodeW: {
         var dpr = (Screen.devicePixelRatio > 0) ? Screen.devicePixelRatio : 1
-        var want = Math.ceil((pdfList.width - 32) * dpr / 128) * 128
-        return Math.max(320, Math.min(2400, want))
+        var want = Math.ceil((pdfList.width - 32) * dpr * root.pdfQuality / 128) * 128
+        // 上限与 pdf_pages.RENDER_MAX 保持一致，两处不同步会出现「切档没反应」
+        return Math.max(320, Math.min(4096, want))
     }
     readonly property string pdfToken: root.pvData.token || ""
     function pdfPageAspect(index) {
@@ -284,6 +298,22 @@ Window {
         files.savePreviewWindow(root.x, root.y, root.width, root.height)
     }
 
+    // 设置面板贴着齿轮往左上弹。面板和齿轮在不同父项里，坐标一律用 mapToItem 换算，
+    // 别拿 gearBtn.parent 凑（中间隔着 ColumnLayout 和内边距）。
+    function openSettings() {
+        var p = gearBtn.mapToItem(contentRoot, 0, 0)
+        settingsPanel.x = Math.max(8, Math.min(p.x + gearBtn.width - settingsPanel.width,
+                                               contentRoot.width - settingsPanel.width - 8))
+        settingsPanel.y = Math.max(8, p.y - settingsPanel.height - 8)
+        settingsPanel.visible = true
+    }
+    function toggleSettings() {
+        if (settingsPanel.visible)
+            settingsPanel.visible = false
+        else
+            openSettings()
+    }
+
     // 原生缩放（startSystemResize）拿不到 released 事件，尺寸只能靠变化后防抖落盘；
     // 拖动同理。600ms 足够把一次拖拽合并成一次写盘。
     Timer {
@@ -326,6 +356,8 @@ Window {
     // 点过标题栏/内容空白后 Qt 会把 activeFocusItem 清成 null，↑↓ 就没人接了。
     // 只在「完全没有焦点项」时补回内容根，不动 TextEdit 那类真实焦点项。
     onActiveChanged: {
+        // 活动状态回写给后端：主窗口那对 Esc/空格 Shortcut 靠它让路（见 FileManagerPage）
+        files.setPreviewActive(active)
         if (active && root.visible)
             contentRoot.forceActiveFocus()
     }
@@ -379,6 +411,7 @@ Window {
 
     Item {
         id: contentRoot
+        objectName: "previewContentRoot"
         anchors.fill: parent
         // 让窗口有 activeFocusItem：没有焦点项时按键事件走不到这里。
         focus: true
@@ -386,6 +419,13 @@ Window {
         // 没有焦点项时不触发；Keys 跟着焦点走，行为和主窗口那套一致，也便于离屏验证。
         // TextEdit 有焦点时未消费的键会冒泡上来，Esc/↑↓ 照样生效。
         Keys.onPressed: function(event) {
+            // 设置面板开着：Esc 只关面板，其余键也不透传（别在面板后面偷偷翻页/关窗）
+            if (settingsPanel.visible) {
+                if (event.key === Qt.Key_Escape)
+                    settingsPanel.visible = false
+                event.accepted = true
+                return
+            }
             if (event.key === Qt.Key_Escape || event.key === Qt.Key_Space) {
                 files.preview.close()
                 event.accepted = true
@@ -935,7 +975,8 @@ Window {
                     }
                     Text {
                         id: hintText
-                        anchors.right: parent.right
+                        anchors.right: gearBtn.left
+                        anchors.rightMargin: 10
                         anchors.verticalCenter: parent.verticalCenter
                         // 宽了才带缩放/拖动说明；窄了优先保住「怎么关」，免得把路径挤没
                         text: root.width >= 860
@@ -946,6 +987,39 @@ Window {
                         font.pixelSize: 11
                         color: Theme.textMuted
                     }
+
+                    // 设置入口：贴着窗口右下角放，避开内容区右下角的尺寸/页数药丸，
+                    // 也避开 14px 的右下缩放手柄（手柄在卡片外缘，这里在底栏内）。
+                    Item {
+                        id: gearBtn
+                        objectName: "previewSettingsButton"
+                        width: 24
+                        height: 24
+                        anchors.right: parent.right
+                        anchors.verticalCenter: parent.verticalCenter
+
+                        Rectangle {
+                            anchors.fill: parent
+                            radius: 6
+                            color: settingsPanel.visible ? Theme.accentSoft
+                                   : (gearMouse.containsMouse ? Theme.bg : "transparent")
+                        }
+                        Icon {
+                            anchors.centerIn: parent
+                            width: 14
+                            height: 14
+                            name: "gear"
+                            color: settingsPanel.visible ? Theme.accent : Theme.textMuted
+                        }
+                        MouseArea {
+                            id: gearMouse
+                            anchors.fill: parent
+                            hoverEnabled: true
+                            cursorShape: Qt.PointingHandCursor
+                            onClicked: root.toggleSettings()
+                        }
+                    }
+
                 }
             }
         }
@@ -1064,6 +1138,132 @@ Window {
             onPressed: function(m) { var g = parent.mapToGlobal(m.x, m.y); root.beginResize(Qt.RightEdge | Qt.BottomEdge, g.x, g.y) }
             onPositionChanged: function(m) { var g = parent.mapToGlobal(m.x, m.y); root.dragResize(g.x, g.y) }
             onReleased: root.endResize()
+        }
+
+        // ---------- 设置面板 ----------
+        // 不用 Popup：Popup 一开就建自己的 focusScope（父链在 Overlay 层），Esc 被它
+        // 按 closePolicy 吃掉之后，同一个事件还会继续冒泡到 contentRoot 的 Keys —— 那时
+        // 面板已经关了，被判成「面板没开」→ 顺手把整个预览窗关掉。Keys / Shortcut /
+        // event.accepted 三种拦法都试过，都挡不住这一次冒泡。改用普通 Rectangle +
+        // 全窗透明遮罩，按键完全由 contentRoot 的 Keys 掌控，行为可预测。
+        Item {
+            id: settingsLayer
+            objectName: "previewSettingsLayer"
+            anchors.fill: parent
+            z: 50
+
+            // 遮罩一直存在，但只在面板打开时接事件：父项不能再绑 settingsPanel.visible，
+            // 那会和「子项 visible」形成互相依赖，面板就打不开了。
+            MouseArea {
+                anchors.fill: parent
+                enabled: settingsPanel.visible
+                onClicked: settingsPanel.visible = false
+            }
+
+            Rectangle {
+                id: settingsPanel
+                objectName: "previewSettingsPanel"
+                width: 272
+                height: panelCol.implicitHeight + 28
+                radius: 12
+                color: Theme.surface
+                border.width: 1
+                border.color: Theme.line
+                visible: false
+
+                Column {
+                    id: panelCol
+                    x: 14
+                    y: 14
+                    width: parent.width - 28
+                    spacing: 6
+
+                    Text {
+                        text: "预览设置"
+                        font.pixelSize: 13
+                        font.weight: Font.DemiBold
+                        color: Theme.text
+                    }
+                    Text {
+                        text: "PDF 清晰度"
+                        font.pixelSize: 11
+                        color: Theme.textMuted
+                        topPadding: 2
+                    }
+
+                    Repeater {
+                        model: root.qualityChoices
+                        delegate: Rectangle {
+                            required property var modelData
+                            width: panelCol.width
+                            height: 36
+                            radius: 8
+                            readonly property bool picked:
+                                Math.abs(root.pdfQuality - modelData.v) < 0.001
+                            color: picked ? Theme.accentSoft
+                                          : (rowMouse.containsMouse ? Theme.bg
+                                                                    : "transparent")
+
+                            Rectangle {
+                                id: radioRing
+                                x: 10
+                                y: (parent.height - 14) / 2
+                                width: 14
+                                height: 14
+                                radius: 7
+                                color: "transparent"
+                                border.width: 1
+                                border.color: parent.picked ? Theme.accent
+                                                            : Theme.textMuted
+                            }
+                            Rectangle {
+                                anchors.centerIn: radioRing
+                                width: 6
+                                height: 6
+                                radius: 3
+                                color: Theme.accent
+                                visible: parent.picked
+                            }
+                            Text {
+                                x: 34
+                                anchors.verticalCenter: parent.verticalCenter
+                                text: modelData.label
+                                font.pixelSize: 12
+                                color: parent.picked ? Theme.accent : Theme.text
+                            }
+                            Text {
+                                anchors.right: parent.right
+                                anchors.rightMargin: 10
+                                anchors.verticalCenter: parent.verticalCenter
+                                text: modelData.desc
+                                font.pixelSize: 10
+                                color: Theme.textMuted
+                            }
+                            MouseArea {
+                                id: rowMouse
+                                anchors.fill: parent
+                                hoverEnabled: true
+                                cursorShape: Qt.PointingHandCursor
+                                onClicked: files.setPdfQuality(modelData.v)
+                            }
+                        }
+                    }
+
+                    Rectangle {
+                        width: parent.width
+                        height: 1
+                        color: Theme.line
+                    }
+                    Text {
+                        width: parent.width
+                        text: "当前按 " + root.pdfDecodeW + "px 宽渲染 · 只影响 PDF"
+                        font.pixelSize: 10
+                        color: Theme.textMuted
+                        wrapMode: Text.Wrap
+                    }
+                }
+
+            }
         }
     }
 }

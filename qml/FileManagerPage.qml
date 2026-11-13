@@ -37,7 +37,10 @@ Item {
     readonly property bool shortcutOk: root.pageActive && !files.preview.open &&
         !leftPanel.addressFocused && !leftPanel.filterFocused &&
         !rightPanel.addressFocused && !rightPanel.filterFocused
-    readonly property bool previewKeysOk: root.pageActive && files.preview.open
+    // 预览窗自己激活时不能让路：Qt 的 Shortcut 不是严格 per-active-window，
+    // 预览窗激活时这条也会跟着激活，导致「面板刚关、窗口也被关了」。
+    readonly property bool previewKeysOk: root.pageActive && files.preview.open &&
+        !files.previewActive
 
     function activePanel() { return files.activeSide === "left" ? files.left : files.right }
     function activeFm() { return files.activeSide === "left" ? leftPanel : rightPanel }

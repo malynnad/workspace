@@ -322,6 +322,18 @@ def _favorites_state():
         assert (legacy["w"], legacy["h"]) == (state.PREVIEW_DEFAULT_W,
                                               state.PREVIEW_DEFAULT_H), legacy
 
+        # 预览偏好：默认档、白名单往返、手改 JSON 写的野值必须回退到默认档
+        assert back["previewPrefs"]["pdfQuality"] == state.PDF_QUALITY_DEFAULT
+        prefs = state.default_state(home)
+        prefs["previewPrefs"] = {"pdfQuality": 2.0}
+        assert state.save(cfg, prefs) is True
+        assert state.load(cfg, home)["previewPrefs"]["pdfQuality"] == 2.0
+        for bogus in (1.34, "高", None, 99, -1):
+            cleaned = state._clean_preview_prefs({"pdfQuality": bogus})
+            assert cleaned["pdfQuality"] == state.PDF_QUALITY_DEFAULT, (bogus, cleaned)
+        assert state._clean_preview_prefs("nonsense")["pdfQuality"] == \
+            state.PDF_QUALITY_DEFAULT
+
         # 常用位置：结构固定、路径真实存在
         items = locations.standard_locations(os.path.expanduser("~"))
         assert items and items[0]["name"] == "主目录"

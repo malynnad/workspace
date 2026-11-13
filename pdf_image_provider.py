@@ -25,7 +25,9 @@ from PySide6.QtQuick import (QQuickAsyncImageProvider, QQuickImageResponse,
 import pdf_pages
 
 POOL = ThreadPoolExecutor(max_workers=1, thread_name_prefix="pdf-page")
-CACHE_BYTES = 64 * 1024 * 1024      # LRU 上限：A4@1400px 约 11MB，能留 5~6 页
+# LRU 上限：1.5 档 A4@2688 宽约 30MB，能留 3 页；2.0 档约 55MB，只留 1 页多
+# （「极高」是主动选择，翻页时重渲是可接受的代价）。别再加：麒麟机 8GB。
+CACHE_BYTES = 96 * 1024 * 1024
 
 _CACHE: "OrderedDict[tuple, QImage]" = OrderedDict()
 _CACHE_LOCK = threading.Lock()

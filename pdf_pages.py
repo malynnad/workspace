@@ -38,9 +38,14 @@ _ENGINE = ""                 # "mupdf" / "qtpdf" / ""
 _IMPORT_LOCK = threading.Lock()
 
 RENDER_MIN = 320             # 最小渲染宽度（再小就看不清字）
-RENDER_MAX = 2400            # 最大渲染宽度（半屏 Retina 也够）
+# 最大渲染宽度：要容得下「宽窗口 × 2.0 倍超采样」。半屏 960 逻辑宽、dpr 2、
+# 2.0 档 = 3584；再宽就封顶，这时「极高」会被压成「清晰」。QML 里的 clamp
+# 必须与本值一致（PreviewWindow.pdfDecodeW），两处不同步会出现「切档没反应」。
+RENDER_MAX = 4096
 RENDER_STEP = 128            # 宽度量化步长：拖窗口时避免每 1px 重渲一次
-MAX_PX = 8_000_000           # 单页像素上限，防畸形页面吃爆内存
+# 单页像素上限，防畸形页面（票据长条页）吃爆内存。2.0 档 A4 约 18.2M，
+# 留一点余量到 20M：一页 RGB888 ≈ 60MB，8GB 机器同时只渲一页，能接受。
+MAX_PX = 20_000_000
 REG_LIMIT = 6                # 同时记住几份 PDF（每份含已打开的文档句柄）
 
 

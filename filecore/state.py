@@ -41,6 +41,15 @@ PREVIEW_MAX_H = 2400
 PREVIEW_GEOM_VERSION = 2
 _COORD_LIMIT = 30000
 
+# 预览偏好：PDF 清晰度倍率（超采样倍数）。
+#   1.0 = 按屏幕物理像素 1:1 渲染，最省内存；
+#   1.5 = 渲 1.5 倍再缩回显示，字边更实，像素量 2.25 倍（默认，实测仍然够快）；
+#   2.0 = 极高，单页内存约 4 倍。
+# 只影响 PDF 页图，与 QT_SCALE_FACTOR 的界面缩放无关。必须是白名单档位：
+# 手改 JSON 写成 1.34 这种值面板里没有对应项，回退默认。
+PDF_QUALITY_CHOICES = (1.0, 1.5, 2.0)
+PDF_QUALITY_DEFAULT = 1.5
+
 
 def _clean_preview_window(raw) -> dict:
     """预览窗几何逐项回退。placed=False 表示用户从没挪过，由 QML 决定初始位置。"""
@@ -65,6 +74,22 @@ def _clean_preview_window(raw) -> dict:
     # 只有四个坐标都像样才认「挪过」，避免半截数据把窗口丢到 0,0
     out["placed"] = bool(raw.get("placed")) and isinstance(raw.get("x"), (int, float)) \
         and isinstance(raw.get("y"), (int, float))
+    return out
+
+
+def _clean_preview_prefs(raw) -> dict:
+    """预览偏好逐项回退。目前只有一项：PDF 清晰度倍率。"""
+    out = {"pdfQuality": PDF_QUALITY_DEFAULT}
+    if not isinstance(raw, dict):
+        return out
+    try:
+        q = float(raw.get("pdfQuality"))
+    except (TypeError, ValueError):
+        return out
+    for choice in PDF_QUALITY_CHOICES:
+        if abs(q - choice) < 1e-6:
+            out["pdfQuality"] = choice
+            break
     return out
 
 
@@ -118,6 +143,7 @@ def default_state(home: str) -> dict:
         "leftWidth": DEFAULT_LEFT_WIDTH,
         "favorites": [],
         "previewWindow": _clean_preview_window(None),
+        "previewPrefs": _clean_preview_prefs(None),
         "panels": {"left": dict(panel), "right": dict(panel)},
     }
 
@@ -153,6 +179,7 @@ def load(path, home: str) -> dict:
     out["leftWidth"] = clamp_width(data.get("leftWidth", DEFAULT_LEFT_WIDTH))
     out["favorites"] = _clean_favorites(data.get("favorites"))
     out["previewWindow"] = _clean_preview_window(data.get("previewWindow"))
+    out["previewPrefs"] = _clean_preview_prefs(data.get("previewPrefs"))
 
     panels = data.get("panels")
     if not isinstance(panels, dict):

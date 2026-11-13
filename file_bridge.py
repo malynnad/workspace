@@ -464,6 +464,8 @@ class FileManagerBackend(QObject):
     toast = Signal(str)
     favoritesChanged = Signal()
     previewWindowChanged = Signal()
+    previewPrefsChanged = Signal()
+    previewActiveChanged = Signal()
 
     def __init__(self, app_home, parent=None):
         super().__init__(parent)
@@ -477,6 +479,8 @@ class FileManagerBackend(QObject):
         self._left_width = state.DEFAULT_LEFT_WIDTH
         self._favorites: list[str] = []          # 存 vpath，不是绝对路径
         self._preview_window = state._clean_preview_window(None)
+        self._preview_prefs = state._clean_preview_prefs(None)
+        self._preview_active = False
         self._local_source = LocalSource()
         self._busy = False
         self._progress = 0
@@ -558,6 +562,18 @@ class FileManagerBackend(QObject):
         """预览窗上次的位置/尺寸。placed=False 时由 QML 按主窗口右侧算初始位置。"""
         return dict(self._preview_window)
 
+    @Property(bool, notify=previewActiveChanged)
+    def previewActive(self):
+        """预览窗是否是当前活动窗口。主窗口的 Esc/空格 Shortcut 要看它：
+        Qt 的 Shortcut 不是严格 per-active-window，预览窗激活时主窗口那条照样会
+        被激活 —— 结果在预览窗里按 Esc，面板刚关掉、窗口也被关了。"""
+        return self._preview_active
+
+    @Property("QVariantMap", notify=previewPrefsChanged)
+    def previewPrefs(self):
+        """预览偏好（目前只有 pdfQuality）。QML 只读，改档走 setPdfQuality。"""
+        return dict(self._preview_prefs)
+
     # ---------------- Slots ----------------
     @Slot(str)
     def setActiveSide(self, side):
@@ -633,6 +649,27 @@ class FileManagerBackend(QObject):
         self.previewWindowChanged.emit()
         self._schedule_save()
 
+    @Slot(bool)
+    def setPreviewActive(self, active):
+        active = bool(active)
+        if active != self._preview_active:
+            self._preview_active = active
+            self.previewActiveChanged.emit()
+
+    @Slot(float)
+    def setPdfQuality(self, quality):
+        """PDF 清晰度档位（1.0 / 1.5 / 2.0）。非法值由清洗函数回退到默认档。
+
+        不需要清页图缓存：缓存 key 是 (token, 页, 量化后的渲染宽度)，
+        倍率乘进宽度里，换档 key 自然不同，等于自动失效。
+        """
+        cleaned = state._clean_preview_prefs({"pdfQuality": quality})
+        if cleaned == self._preview_prefs:
+            return
+        self._preview_prefs = cleaned
+        self.previewPrefsChanged.emit()
+        self._schedule_save()
+
     @Slot()
     def shutdown(self):
         """退出前排干后台扫描与预览，避免工作线程在对象销毁后继续发信号。"""
@@ -659,6 +696,7 @@ class FileManagerBackend(QObject):
             "leftWidth": self._left_width,
             "favorites": list(self._favorites),
             "previewWindow": dict(self._preview_window),
+            "previewPrefs": dict(self._preview_prefs),
             "panels": panels,
         })
 
@@ -670,6 +708,8 @@ class FileManagerBackend(QObject):
         self._favorites = list(data.get("favorites", []))
         self._preview_window = dict(data.get("previewWindow")
                                     or state._clean_preview_window(None))
+        self._preview_prefs = dict(data.get("previewPrefs")
+                                   or state._clean_preview_prefs(None))
         for side in ("left", "right"):
             cfg = data["panels"][side]
             cwd_value = state.validate(cfg["cwd"], HOME, self._local_source)
@@ -677,6 +717,7 @@ class FileManagerBackend(QObject):
         self.activeSideChanged.emit()
         self.leftWidthChanged.emit()
         self.favoritesChanged.emit()      # 保险：QML 若已挂载，同步一次收藏列表
+        self.previewPrefsChanged.emit()
 
     def _schedule_save(self):
         self._save_timer.start()

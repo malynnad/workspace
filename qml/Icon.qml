@@ -175,6 +175,24 @@ Item {
                 ctx.beginPath()
                 ctx.moveTo(w * 0.60, h * 0.10); ctx.lineTo(w * 0.60, h * 0.28)
                 ctx.lineTo(w * 0.78, h * 0.28); ctx.stroke()
+            } else if (root.name === "gear") {
+                // 设置：外圆 + 内孔 + 8 根齿。不画实心齿块，线描风格和其他图标一致
+                var gcx = w * 0.5
+                var gcy = h * 0.5
+                var gr = Math.min(w, h)
+                ctx.beginPath()
+                ctx.arc(gcx, gcy, gr * 0.30, 0, Math.PI * 2)
+                ctx.stroke()
+                ctx.beginPath()
+                ctx.arc(gcx, gcy, gr * 0.11, 0, Math.PI * 2)
+                ctx.stroke()
+                for (var gi = 0; gi < 8; ++gi) {
+                    var ga = gi * Math.PI / 4
+                    ctx.beginPath()
+                    ctx.moveTo(gcx + Math.cos(ga) * gr * 0.30, gcy + Math.sin(ga) * gr * 0.30)
+                    ctx.lineTo(gcx + Math.cos(ga) * gr * 0.45, gcy + Math.sin(ga) * gr * 0.45)
+                    ctx.stroke()
+                }
             } else { // folder（兜底：未知 name 一律画文件夹，新图标必须插在本分支之前）
                 ctx.beginPath()
                 ctx.moveTo(1.8, h - 3.4)
