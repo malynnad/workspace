@@ -41,7 +41,7 @@ class OfficePreviewer:
     def can_handle(self, entry) -> bool:
         if entry.is_dir:
             return False
-        if entry.kind == "office":
+        if entry.kind in ("word", "excel", "ppt", "office"):
             return True
         return office.is_office(entry.name)
 

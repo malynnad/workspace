@@ -15,7 +15,9 @@ import tempfile
 
 from . import bootstrap, state, vpath
 from .cancel import CancelToken
-from .entries import Entry, KIND_LABEL, human_size, human_time, kind_of, make_entry
+from .entries import (Entry, KIND_LABEL, OFFICE_EXT, SHEET_EXT, SLIDE_EXT,
+                      WORD_EXT, human_size, human_time, kind_label, kind_of,
+                      make_entry)
 from .listing import MAX_ITEMS, natural_key, scan_dir, sort_entries, visible_entries
 from .preview import base as preview_base
 
@@ -129,7 +131,23 @@ def _kind_of():
     assert kind_of("file:///.DS_Store") == "text"
     assert kind_of("file:///noext") == "other"
     assert kind_of("file:///x", True) == "folder"
-    assert all(k in KIND_LABEL for k in ("folder", "image", "other"))
+    # 办公文档拆成三族（M2）：色块要能靠颜色认出 Word 蓝 / Excel 绿 / PPT 橙，
+    # 所以 kind 必须分开，而不能再统一成 "office"。
+    assert kind_of("file:///报告.DOCX") == "word"
+    assert kind_of("file:///a.doc") == "word"
+    assert kind_of("file:///a.odt") == "word"
+    assert kind_of("file:///表.XLSX") == "excel"
+    assert kind_of("file:///a.csv") == "excel"
+    assert kind_of("file:///a.ods") == "excel"
+    assert kind_of("file:///讲稿.PPT") == "ppt"
+    assert kind_of("file:///a.pptx") == "ppt"
+    assert kind_of("file:///a.odp") == "ppt"
+    assert kind_label("word") == "Word 文档"
+    assert kind_label("excel") == "Excel 表格"
+    assert kind_label("ppt") == "演示文稿"
+    # 三个族的并集不能漏：OfficePreviewer 靠它兜住按扩展名来的文件
+    assert OFFICE_EXT == WORD_EXT | SHEET_EXT | SLIDE_EXT
+    assert all(k in KIND_LABEL for k in ("folder", "image", "other", "word", "excel", "ppt"))
 
 
 def _human():

@@ -14,8 +14,13 @@ from datetime import datetime
 IMAGE_EXT = {".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp", ".tif", ".tiff",
              ".heic", ".heif", ".svg", ".ico", ".avif"}
 PDF_EXT = {".pdf"}
-OFFICE_EXT = {".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx", ".odt",
-              ".ods", ".odp", ".rtf", ".csv"}
+# 办公文档拆成三族：列表里的类型点要能靠颜色认出来，Word 蓝 / Excel 绿 /
+# PowerPoint 橙是行业惯例，比统一一个"办公文档"有用得多。三者仍是同一套
+# 预览器（OfficePreviewer 按扩展名分派读法），拆的只是 kind。
+WORD_EXT = {".doc", ".docx", ".odt", ".rtf"}
+SHEET_EXT = {".xls", ".xlsx", ".ods", ".csv"}
+SLIDE_EXT = {".ppt", ".pptx", ".odp"}
+OFFICE_EXT = WORD_EXT | SHEET_EXT | SLIDE_EXT
 ARCHIVE_EXT = {".zip", ".rar", ".7z", ".tar", ".gz", ".bz2", ".xz", ".tgz",
                ".tbz", ".txz", ".deb", ".rpm", ".iso"}
 VIDEO_EXT = {".mp4", ".mov", ".mkv", ".avi", ".webm", ".flv", ".wmv", ".m4v", ".mpg"}
@@ -32,7 +37,10 @@ KIND_LABEL = {
     "folder": "文件夹",
     "image": "图片",
     "pdf": "PDF 文档",
-    "office": "办公文档",
+    "office": "办公文档",       # 旧 kind，M2 起拆成 word/excel/ppt，仅留作兜底
+    "word": "Word 文档",
+    "excel": "Excel 表格",
+    "ppt": "演示文稿",
     "archive": "压缩包",
     "video": "视频",
     "audio": "音频",
@@ -54,8 +62,12 @@ def kind_of(vpath: str, is_dir: bool | None = None) -> str:
         return "image"
     if ext in PDF_EXT:
         return "pdf"
-    if ext in OFFICE_EXT:
-        return "office"
+    if ext in WORD_EXT:
+        return "word"
+    if ext in SHEET_EXT:
+        return "excel"
+    if ext in SLIDE_EXT:
+        return "ppt"
     if ext in ARCHIVE_EXT:
         return "archive"
     if ext in VIDEO_EXT:
