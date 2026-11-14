@@ -53,7 +53,9 @@ Button {
                 return root.hovered ? "#F1F2F6" : "transparent"
             return root.hovered ? "#EAECF2" : "#F1F2F6"
         }
-        border.width: root.danger && !root._solid ? 1 : 0
+        // ghost 是「无底的文字按钮」，再给它描边就变成小胶囊了 —— 一排里混着
+        // 有框的和没框的，视觉重量对不上。danger + ghost 只保留红色文字。
+        border.width: root.danger && !root._solid && !root.ghost ? 1 : 0
         border.color: "#F2C9C9"
         opacity: root.enabled ? 1 : 0.45
     }

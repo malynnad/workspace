@@ -24,6 +24,9 @@ CREATE TABLE IF NOT EXISTS log_entries(
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP);
 CREATE INDEX IF NOT EXISTS idx_log_entries_date ON log_entries(log_date);
+-- 类型改名要按名字批量回写、设置页要数「这个类型下有几条」，都靠它。
+-- 老库没有这个索引，CREATE IF NOT EXISTS 每次启动跑一遍，会自动补上。
+CREATE INDEX IF NOT EXISTS idx_log_entries_type ON log_entries(entry_type);
 CREATE TABLE IF NOT EXISTS todos(
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   content TEXT NOT NULL,
@@ -61,6 +64,7 @@ class WorkspaceDB(QObject):
     entriesChanged = Signal()
     todosChanged = Signal()
     listChanged = Signal()
+    typesChanged = Signal()
 
     WEEK_CN = ("周一", "周二", "周三", "周四", "周五", "周六", "周日")
 
@@ -75,6 +79,8 @@ class WorkspaceDB(QObject):
         self._entries = []
         self._todos = []
         self._list_items = []
+        self._types = []
+        self._reload_types()
         self._load_todos()
 
     # ---------- properties ----------
@@ -102,10 +108,117 @@ class WorkspaceDB(QObject):
     def openCount(self):
         return sum(1 for t in self._todos if t["status"] == "open")
 
-    @Property(list, constant=True)
+    @Property(list, notify=typesChanged)
     def logTypes(self):
-        rows = self._conn.execute("SELECT * FROM log_types ORDER BY seq").fetchall()
-        return [dict(r) for r in rows]
+        """日志类型选项，按 seq 升序。额外带 n = 该类型下有多少条记录。
+
+        不能是 constant=True —— 设置页会增删改类型，QML 必须收到通知才会重画。
+        """
+        return self._types
+
+    def _reload_types(self):
+        """重算类型表 + 使用计数。只在类型变动时调，别放进属性 getter 里：
+        QML 一次布局可能读它好几遍，每次都扫全表没必要。"""
+        rows = self._conn.execute(
+            "SELECT t.id, t.name, t.seq,"
+            " (SELECT COUNT(*) FROM log_entries e WHERE e.entry_type = t.name) AS n"
+            " FROM log_types t ORDER BY t.seq, t.id").fetchall()
+        self._types = [dict(r) for r in rows]
+
+    # ---------- 日志类型的增删改 ----------
+    # 三个都返回 {ok, reason, affected}，QML 直接拿去弹 Toast / 判断。
+    # 语义上「类型」只是 log_entries.entry_type 这个字符串的候选表，没有外键，
+    # 所以任何一次写都必须在 Python 侧一次做完，不能让 QML 分两步调。
+
+    MAX_TYPE_NAME = 12
+
+    def _type_name_taken(self, name, exclude_id=0):
+        row = self._conn.execute(
+            "SELECT id FROM log_types WHERE name = ? AND id <> ?",
+            (name, exclude_id)).fetchone()
+        return row is not None
+
+    @Slot(str, result="QVariantMap")
+    def addLogType(self, name):
+        n = (name or "").strip()
+        if not n:
+            return {"ok": False, "reason": "名称不能为空", "affected": 0}
+        if len(n) > self.MAX_TYPE_NAME:
+            return {"ok": False, "reason": "名称最多 %d 个字" % self.MAX_TYPE_NAME,
+                    "affected": 0}
+        if self._type_name_taken(n):
+            return {"ok": False, "reason": "已经有叫「%s」的类型了" % n, "affected": 0}
+        row = self._conn.execute(
+            "SELECT COALESCE(MAX(seq), -1) + 1 FROM log_types").fetchone()
+        self._q("INSERT INTO log_types(name, seq) VALUES(?,?)", (n, row[0]))
+        self._reload_types()
+        self.typesChanged.emit()
+        return {"ok": True, "reason": "", "affected": 0}
+
+    @Slot(int, str, result="QVariantMap")
+    def renameLogType(self, tid, name):
+        """改名会**连带更新已有记录**。
+
+        旧版 WorkLogs 只改 log_types 这一行，历史条目的 entry_type 还是老名字，
+        结果下拉框里叫「补贴款」、列表里 14045 条却还显示「补贴」。类型是同一个，
+        这里一次事务里把两边一起改掉。
+        """
+        n = (name or "").strip()
+        if not n:
+            return {"ok": False, "reason": "名称不能为空", "affected": 0}
+        if len(n) > self.MAX_TYPE_NAME:
+            return {"ok": False, "reason": "名称最多 %d 个字" % self.MAX_TYPE_NAME,
+                    "affected": 0}
+        row = self._conn.execute(
+            "SELECT name FROM log_types WHERE id = ?", (tid,)).fetchone()
+        if row is None:
+            return {"ok": False, "reason": "这个类型已经不在了", "affected": 0}
+        old = row["name"]
+        if old == n:
+            return {"ok": True, "reason": "", "affected": 0}
+        if self._type_name_taken(n, exclude_id=tid):
+            return {"ok": False, "reason": "已经有叫「%s」的类型了" % n, "affected": 0}
+        try:
+            # 不显式 BEGIN：sqlite3 在第一条 DML 前自己开事务，两条 UPDATE 天然
+            # 在同一个事务里。手写 BEGIN 反而可能撞上「transaction within a
+            # transaction」。
+            self._conn.execute("UPDATE log_types SET name = ? WHERE id = ?", (n, tid))
+            cur = self._conn.execute(
+                "UPDATE log_entries SET entry_type = ? WHERE entry_type = ?", (n, old))
+            affected = cur.rowcount
+            self._conn.commit()
+        except sqlite3.Error as e:
+            self._conn.rollback()
+            return {"ok": False, "reason": "改名失败：%s" % e, "affected": 0}
+        self._reload_types()
+        # 记录内容变了，日历条数不变但列表要重画
+        self._load_entries()
+        self.typesChanged.emit()
+        return {"ok": True, "reason": "", "affected": max(0, affected)}
+
+    @Slot(int, result="QVariantMap")
+    def deleteLogType(self, tid):
+        """只允许删**空类型**。
+
+        有记录在用的类型一律拒绝，并告诉用户还有多少条。理由：删掉之后那些条目的
+        entry_type 就成了孤儿字符串 —— 下拉里没有、筛选里也没有，用户再也点不到它，
+        想抢救只能改数据库。宁可让他先改名或换类型。
+        """
+        row = self._conn.execute(
+            "SELECT name FROM log_types WHERE id = ?", (tid,)).fetchone()
+        if row is None:
+            return {"ok": False, "reason": "这个类型已经不在了", "affected": 0}
+        name = row["name"]
+        used = self._conn.execute(
+            "SELECT COUNT(*) FROM log_entries WHERE entry_type = ?", (name,)).fetchone()[0]
+        if used:
+            return {"ok": False, "affected": used,
+                    "reason": "「%s」下还有 %d 条记录，删了这些记录就没类型了。"
+                              "先改名、或把它们改成别的类型。" % (name, used)}
+        self._q("DELETE FROM log_types WHERE id = ?", (tid,))
+        self._reload_types()
+        self.typesChanged.emit()
+        return {"ok": True, "reason": "", "affected": 0}
 
     # ---------- 内部 ----------
     def _q(self, sql, args=()):

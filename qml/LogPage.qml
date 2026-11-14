@@ -18,7 +18,9 @@ Item {
     property var monthStat: ({ "count": 0, "days": 0 })
 
     property int draftId: -1
-    property int typeIndex: 0
+    // 记「类型名」而不是下标：设置页增删类型后 backend.logTypes 会变，存下标会
+    // 指到别的类型上去（旧实现就是这个毛病）。存名字天然免疫顺序变化。
+    property string draftType: ""
 
     property var listModel: []
     property var entryModel: []
@@ -94,23 +96,37 @@ Item {
         if (viewMonth === 11) { viewMonth = 0; viewYear++ } else viewMonth++
     }
 
+    function hasType(name) {
+        for (var i = 0; i < backend.logTypes.length; i++)
+            if (backend.logTypes[i].name === name)
+                return true
+        return false
+    }
+    function defaultType() {
+        return backend.logTypes.length > 0 ? backend.logTypes[0].name : ""
+    }
     function clearDraft() {
         draftId = -1
         subjectField.text = ""
         contentArea.text = ""
-        typeIndex = 0
+        // 类型保留上一次选的：一天里连着记同一类的事是常态，回回重选很烦。
+        // 只有那个类型已经被删掉时才退回第一个。
+        if (!hasType(draftType))
+            draftType = defaultType()
     }
     function loadDraft(e) {
         draftId = e.id
         subjectField.text = e.subject || ""
         contentArea.text = e.content || ""
-        typeIndex = 0
-        for (var i = 0; i < backend.logTypes.length; i++)
-            if (backend.logTypes[i].name === (e.entry_type || "工作")) typeIndex = i
+        // 原样保留条目自己的类型名，哪怕它已经不在类型表里 —— 否则一编辑就把
+        // 老数据的类型悄悄改成了第一个类型。
+        draftType = e.entry_type || defaultType()
     }
     function typeName() {
-        var t = backend.logTypes[typeIndex]
-        return t ? t.name : "工作"
+        // 新条目必须落在现有类型上；改老条目则允许保留「已删除类型」的原值。
+        if (draftType !== "" && (draftId !== -1 || hasType(draftType)))
+            return draftType
+        return defaultType()
     }
 
     // 从全部记录/搜索结果跳回日历当天
@@ -146,6 +162,7 @@ Item {
         // 上次退出时停在「全部记录」的话，这次进来就该有数据
         if (root.showingList)
             refreshList()
+        root.draftType = root.defaultType()
     }
 
     Connections {
@@ -158,6 +175,12 @@ Item {
         }
         function onListChanged() {
             root.listModel = backend.listItems
+        }
+        function onTypesChanged() {
+            // 设置页删掉了当前正在用的类型：新条目退回第一个；正在编辑的老条目
+            // 保原值（typeName() 里那半句），不会把老数据的类型改掉。
+            if (root.draftId === -1 && !root.hasType(root.draftType))
+                root.draftType = root.defaultType()
         }
     }
 
@@ -477,28 +500,76 @@ Item {
                             Layout.fillWidth: true
                             spacing: 8
 
-                            Row {
-                                spacing: 6
-                                Repeater {
-                                    model: backend.logTypes
-                                    delegate: Rectangle {
-                                        height: 32
-                                        width: pillText.implicitWidth + 20
-                                        radius: 8
-                                        color: root.typeIndex === index ? Theme.accentSoft : "#F5F6FA"
-                                        border.width: root.typeIndex === index ? 1 : 0
-                                        border.color: Theme.accent
-                                        Text {
-                                            id: pillText
-                                            anchors.centerIn: parent
-                                            text: modelData.name
-                                            font.pixelSize: 12
-                                            color: root.typeIndex === index ? Theme.accent : Theme.textMuted
-                                        }
-                                        MouseArea {
-                                            anchors.fill: parent
-                                            cursorShape: Qt.PointingHandCursor
-                                            onClicked: root.typeIndex = index
+                            // 类型多了（自定义之后可能七八个）不能让这排把「主题」框挤没，
+                            // 所以给个宽度上限，超了就地横向拖动/滚轮看。
+                            Flickable {
+                                id: typeStrip
+                                objectName: "typeStrip"
+                                implicitHeight: 32
+                                Layout.preferredHeight: 32
+                                Layout.maximumWidth: Math.max(120, parent.width - 170)
+                                Layout.preferredWidth: Math.min(typeRow.implicitWidth,
+                                                                Layout.maximumWidth)
+                                contentWidth: typeRow.width
+                                contentHeight: 32
+                                clip: true
+                                boundsBehavior: Flickable.StopAtBounds
+                                interactive: contentWidth > width
+
+                                // 滚轮直接横滚：Flickable 默认只认竖向滚轮，叠加在
+                                // 一排标签上的滚轮否则什么都不会发生，没人会发现能拖。
+                                WheelHandler {
+                                    onWheel: function(e) {
+                                        var step = -(e.angleDelta.y + e.angleDelta.x)
+                                        var maxX = Math.max(0, typeStrip.contentWidth
+                                                               - typeStrip.width)
+                                        typeStrip.contentX = Math.max(0,
+                                                Math.min(maxX, typeStrip.contentX + step))
+                                    }
+                                }
+
+                                // 右缘淡出：类型多到装不下时，最后那个标签会被切断，
+                                // 看着像渲染坏了。淡出等于告诉人「往右还有」。
+                                Rectangle {
+                                    x: typeStrip.contentX + typeStrip.width - width
+                                    y: 0
+                                    width: 20
+                                    height: typeStrip.height
+                                    visible: typeStrip.contentX
+                                             < typeStrip.contentWidth - typeStrip.width - 1
+                                    gradient: Gradient {
+                                        orientation: Gradient.Horizontal
+                                        GradientStop { position: 0.0; color: "#00FFFFFF" }
+                                        GradientStop { position: 1.0; color: "#FFFFFFFF" }
+                                    }
+                                }
+
+                                Row {
+                                    id: typeRow
+                                    spacing: 6
+                                    Repeater {
+                                        model: backend.logTypes
+                                        delegate: Rectangle {
+                                            height: 32
+                                            width: pillText.implicitWidth + 20
+                                            radius: 8
+                                            color: root.typeName() === modelData.name
+                                                   ? Theme.accentSoft : "#F5F6FA"
+                                            border.width: root.typeName() === modelData.name ? 1 : 0
+                                            border.color: Theme.accent
+                                            Text {
+                                                id: pillText
+                                                anchors.centerIn: parent
+                                                text: modelData.name
+                                                font.pixelSize: 12
+                                                color: root.typeName() === modelData.name
+                                                       ? Theme.accent : Theme.textMuted
+                                            }
+                                            MouseArea {
+                                                anchors.fill: parent
+                                                cursorShape: Qt.PointingHandCursor
+                                                onClicked: root.draftType = modelData.name
+                                            }
                                         }
                                     }
                                 }
