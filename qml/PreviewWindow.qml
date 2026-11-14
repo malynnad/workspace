@@ -48,6 +48,13 @@ Window {
     // 密码输错时用户得从头再敲一遍。
     property bool unlocking: false
     readonly property string pvKind: files.preview.kind
+    // 真正的来源类型。Office 文档走「版面」那条路时，后端交回来的是一份转好的
+    // PDF，kind 因此是 "pdf" —— 页面渲染、翻页、清晰度档全都免费复用 PDF 那套。
+    // 但标题图标和着色得认「这是 Word 不是 PDF」，所以 payload 里另带 sourceKind。
+    readonly property string pvSourceKind: {
+        var s = (root.pvData && root.pvData.sourceKind) ? root.pvData.sourceKind : ""
+        return (s !== "") ? s : root.pvKind
+    }
     readonly property bool loading: files.preview.state === "loading"
 
     // 离屏运行时探针（只读）：Repeater 的委托项在 findChildren 里看不到，
@@ -56,6 +63,7 @@ Window {
     readonly property bool textVisible: textFlick.visible
     readonly property bool pdfVisible: pdfBox.visible
     readonly property bool pdfListVisible: pdfList.visible
+    readonly property bool officeVisible: officeBox.visible
     readonly property int pdfPageCount: root.pvData.pageCount || 0
     // PDF 页图走 image://pdfpage/<token>/<页码>/<宽度>：后端在工作线程里直接
     // 把 QImage 交给 QML，不落盘也不编码（PNG 编码比渲染本身慢 4~14 倍）。
@@ -90,6 +98,20 @@ Window {
         if (d.encrypted)
             s += " · 已加密"
         return s
+    }
+    // Office 纯文字回退的元信息行：「Word 文档 · 段落 126 · 字数 8432」。
+    // detail 是后端摊平的 [[标签, 值], ...]，按顺序拼就行，QML 侧不认具体字段。
+    function officeMetaText() {
+        var d = root.pvData
+        var parts = []
+        if (d.format)
+            parts.push(d.format)
+        var rows = d.detail || []
+        for (var i = 0; i < rows.length; i++) {
+            if (rows[i] && rows[i].length >= 2 && rows[i][1] !== "")
+                parts.push(rows[i][0] + " " + rows[i][1])
+        }
+        return parts.join(" · ")
     }
     function pdfPageAspect(index) {
         if (index < 0 || index >= root.pvSizes.length)
@@ -472,11 +494,14 @@ Window {
                         anchors.left: parent.left
                         anchors.verticalCenter: parent.verticalCenter
                         width: 20; height: 20
-                        name: root.pvKind === "directory" ? "folder"
-                              : (root.pvKind === "archive" ? "archive" : "file")
+                        // 认来源类型而不是渲染类型：Office 文档走版面时后端返回的
+                        // kind 是 "pdf"（整条 PDF 管线复用），如果照它画图标，打开
+                        // 一份 Word 会看到 PDF 的图标和灰青色，用户会以为看错了。
+                        name: root.pvSourceKind === "directory" ? "folder"
+                              : (root.pvSourceKind === "archive" ? "archive" : "file")
                         // 图标跟着类型走色：压缩包灰褐、图片紫、PDF 灰青，其余回落 accent
-                        color: Theme.kindAccent(root.pvKind === "directory" ? "folder"
-                                                                           : root.pvKind)
+                        color: Theme.kindAccent(root.pvSourceKind === "directory"
+                                                ? "folder" : root.pvSourceKind)
                     }
                     Column {
                         anchors.left: parent.left
@@ -836,6 +861,77 @@ Window {
                             font.pixelSize: 12
                             color: Theme.text
                             selectionColor: Theme.accentSoft
+                        }
+                    }
+
+                    // Office 的纯文字回退：版面开关关着、没装 LibreOffice、或者转换
+                    // 失败时走这里。版面路径不会进来 —— 那条路后端返回 kind="pdf"，
+                    // 直接用上面的 PDF 区块翻页看版式。
+                    Item {
+                        id: officeBox
+                        anchors.fill: parent
+                        visible: root.pvKind === "office"
+
+                        // 三块（提示 / 元信息 / 正文）用 anchors 串起来而不是 Column：
+                        // Column 里的 Flickable 拿不到 fillHeight，而正文必须占满剩余高度。
+                        // 间距靠 topMargin 表达，判据是前一块的 visible ——
+                        // 不要用「height === 0」判断，Text 的 height 绑 implicitHeight
+                        // 会在 wrap 时自引用，Qt 直接报 Binding loop。
+                        Text {
+                            id: officeHint
+                            anchors.left: parent.left
+                            anchors.right: parent.right
+                            anchors.top: parent.top
+                            anchors.leftMargin: 12
+                            anchors.rightMargin: 12
+                            anchors.topMargin: 10
+                            visible: text !== ""
+                            text: root.pvData.hint || ""
+                            wrapMode: Text.Wrap
+                            font.pixelSize: 11
+                            color: root.pvData.encrypted ? Theme.danger : Theme.textMuted
+                        }
+
+                        Text {
+                            id: officeMeta
+                            anchors.left: officeHint.left
+                            anchors.right: officeHint.right
+                            anchors.top: officeHint.visible ? officeHint.bottom : parent.top
+                            anchors.topMargin: officeHint.visible ? 6 : 10
+                            visible: text !== ""
+                            text: root.officeMetaText()
+                            wrapMode: Text.Wrap
+                            font.pixelSize: 10
+                            color: Theme.textMuted
+                        }
+
+                        Flickable {
+                            id: officeFlick
+                            anchors.left: parent.left
+                            anchors.right: parent.right
+                            anchors.top: officeMeta.visible ? officeMeta.bottom
+                                       : (officeHint.visible ? officeHint.bottom : parent.top)
+                            anchors.bottom: parent.bottom
+                            anchors.topMargin: (officeMeta.visible || officeHint.visible) ? 10 : 0
+                            clip: true
+                            boundsBehavior: Flickable.StopAtBounds
+                            contentWidth: width
+                            contentHeight: Math.max(height, officeBody.implicitHeight + 24)
+                            ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
+
+                            TextEdit {
+                                id: officeBody
+                                objectName: "officeText"
+                                x: 12; y: 12
+                                width: Math.max(80, officeFlick.width - 24)
+                                text: root.pvKind === "office" ? (root.pvData.text || "") : ""
+                                readOnly: true
+                                selectByMouse: true
+                                wrapMode: TextEdit.Wrap
+                                font.pixelSize: 12
+                                color: Theme.text
+                                selectionColor: Theme.accentSoft
+                            }
                         }
                     }
 

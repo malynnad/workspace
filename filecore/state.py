@@ -228,6 +228,13 @@ def default_state(home: str) -> dict:
         # 目录自动刷新（M2）：外部改动后自动重扫当前目录。默认开 —— 关掉它
         # 等于「文件管理器看不懂别人改了什么」，这是工具该有的默认行为。
         "autoRefresh": True,
+        # Office 版面（M2）：用 LibreOffice 把 docx/xlsx/pptx 转成 PDF 再渲染，
+        # 能看完整版式，代价是每份文档 1~8 秒。关掉走纯 Python 抽文字（30ms）。
+        # 默认开 —— 装了 soffice 就该用上；没装的话 office.py 自己在运行时探测，
+        # 走的是「没找到 LibreOffice」而不是「开关没开」，不会白等。
+        # 旧 FileManager 默认关，是因为它每份文档都重转、还没有缓存；这里转一次
+        # 落盘复用，默认开的代价只在第一次。
+        "officeLayout": True,
         "favorites": [],
         "previewWindow": _clean_preview_window(None),
         "previewPrefs": _clean_preview_prefs(None),
@@ -271,6 +278,7 @@ def load(path, home: str) -> dict:
     out["workSchedule"] = _clean_work(data.get("workSchedule"))
     # 老状态文件没有这个字段 → 保持默认开，不要因为升级就悄悄关掉
     out["autoRefresh"] = _clean_flag(data.get("autoRefresh"), True)
+    out["officeLayout"] = _clean_flag(data.get("officeLayout"), True)
 
     panels = data.get("panels")
 

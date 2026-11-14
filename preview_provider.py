@@ -16,17 +16,23 @@ from filecore.preview import base
 from filecore.sources import UnknownScheme, resolve
 
 
-def _view_job(previewer, entry, gen, password="", cancel=None):
+def _view_job(previewer, entry, gen, password="", office_layout=True, cancel=None):
     """工作线程：只调零 Qt 的 previewer.view，异常一律转成中文结果。
+
+    注意参数顺序：`cancel` 必须排在最后。TaskRunner 的 _Task.run 是以
+    `cancel=self._token` **关键字**注入的，把它放在中间会让 submit 的位置参数
+    （office_layout）撞成 "multiple values for argument 'cancel'"。
 
     PDF 是唯一需要「Qt 侧补一刀」的类型：真正的栅格化要用 PyMuPDF / QPdfDocument，
     而 filecore 里不能出现 Qt 与第三方渲染库。这里只做**探测**（页数、每页尺寸、
     密码状态、token），页面本身由 QML 的 image://pdfpage/... 按需取 —— 所以
     「打开一个 PDF」是毫秒级的，不再等整篇渲完。
     password 只对加密 PDF 有用，其余类型忽略。
+    office_layout 只对 Office 文档有用：关掉就不启动 LibreOffice（见 office.py）。
     """
     try:
-        payload = previewer.view(entry, base.PreviewContext(cancel=cancel))
+        payload = previewer.view(
+            entry, base.PreviewContext(cancel=cancel, office_layout=office_layout))
         data = payload.data if isinstance(payload.data, dict) else {}
         if payload.kind == "pdf" and not data.get("error"):
             data = _pdf_payload(data, password)
@@ -80,6 +86,10 @@ class PreviewProvider(QObject):
         self._entry = None
         self._pdf_rounds = 0
         self._password = ""        # 当前 PDF 的打开密码（换文件即清空）
+        # Office 版面开关（设置面板那个）。只影响 Office 文档预览：关掉就不启动
+        # LibreOffice，直接走纯 Python 抽文字。由 FileManagerBackend 的
+        # setOfficeLayout 同步过来，读的时候现取，不缓存到每个请求上。
+        self.office_layout = True
         # 本次会话里解锁过的 PDF：vpath -> 密码。作用有两个：
         #   1. 反复打开同一份加密文件（逐个审核）不用一遍遍输密码；
         #   2. 上次渲染只渲了一部分就关掉时，重开能接着渲完 —— 没有密码就没法续渲。
@@ -186,7 +196,8 @@ class PreviewProvider(QObject):
         self._entry = entry
         self._password = self._known.get(str(vpath), "")
         self._job = self._backend._runner.submit(
-            "preview", _view_job, previewer, entry, gen, self._password)
+            "preview", _view_job, previewer, entry, gen, self._password,
+            self.office_layout)
 
     @Slot(str)
     def unlock(self, password: str):
@@ -203,7 +214,8 @@ class PreviewProvider(QObject):
         self._gen += 1
         self._cancel_pending()
         self._job = self._backend._runner.submit(
-            "preview", _view_job, self._pv, self._entry, self._gen, self._password)
+            "preview", _view_job, self._pv, self._entry, self._gen,
+            self._password, self.office_layout)
 
     @Slot()
     def close(self):

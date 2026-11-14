@@ -67,7 +67,7 @@ python3 -m venv .venv
 | 日志→待办 | ✅ | 日志编辑器里「转为待办」按钮，content 取主题或正文首行 |
 | 脚本面板 | ✅ | 扫描 scripts 目录、QProcess 运行、输出回显、双击即跑 |
 | 模板回复 | 未做 | 表已建（templates），UI 阶段 1 后期加，可开关 |
-| 文件管理 | ✅ M1a + M1b | 常驻收藏栏（常用位置 + 可增删收藏夹）+ 等比双面板（窗口任何宽度左右等宽）+ 响应式列宽；导航 / 四列排序 / 过滤 / 隐藏文件 / 多选 / 快捷键 / 状态持久化。M1b 预览是**独立无边框窗口**：默认占屏幕右半边（1920×1080 → 960×972），可拖四边四角缩放、可拖出主窗口、始终置顶（能浮在 Excel 等其他应用上）、拖动标题栏移动、双击复位、几何记进 state.json；空格打开、Esc/空格关闭、↑↓ 切换相邻项并同步主窗口选中项；图片按宽度铺满（竖图/长页可上下滚动）、文本按宽度折行、**PDF 按页竖排滚动**（加密 PDF 弹密码框，Enter 解锁、错密码留在框里重试，同一文件本次会话只问一次）；五种预览器（图片/PDF/文本/文件夹摘要/兜底信息卡）；**设置统一到主窗口左下角**（全应用唯一入口，分「文件浏览 / 工作时段 / 预览清晰度」三组）：显示隐藏文件（全局一份，两栏同步）、目录自动刷新开关、顶栏上下班时间（原来硬编码 12:00/18:00）、图片与 PDF 清晰度（标准 / 清晰 / 极高），改完即时生效并记住；文件列表的类型点按类型着色（目录蓝、图片紫、PDF 珊瑚红、其余浅灰），一眼看出哪些能预览。**写操作 M1c**：跟系统剪贴板双向互通（同时写 `text/uri-list` 和 `x-special/gnome-copied-files`，能和文件管理器互拷）、Ctrl+C/X/V、粘贴同名自动加序号（`报告.pdf` → `报告 (1).pdf`，从不覆盖）、F2 / Ctrl+Shift+N 行内改名（预选主干不选扩展名，Enter 提交、Esc 取消、点到别处也算提交）、Delete 移回收站（freedesktop 规范，跨分区落 `.Trash-<uid>`）、Shift+Delete 永久删除（必过确认框）、**自绘右键菜单**（样式走 Theme，不进系统；「预览」= 浮窗 + 空格，「打开」= 系统默认程序 + Ctrl+Enter）；后台分块复制、带进度、可取消；**M2 起步：目录自动刷新**（QFileSystemWatcher 只挂当前目录，350ms 防抖 + 800ms 最小间隔，设置面板里可关）。**M2 压缩包**：ZIP / TAR 家族（含 .tar.gz/.bzip2/.xz）**双击当目录逛**（`zip+file://` 走 FileSource 注册表，面板零改动），RAR / 7z 有外部程序（7z / unrar / bsdtar）时同等待遇、没有就降级成「能列不能解」并给出安装提示；裸 .gz/.bz2/.xz 单文件流式解压；右键「解压到此处 / 解压到独立文件夹 / 压缩为 ZIP」（ZIP_DEFLATED，已压过的类型直接 store），后台分块、带进度、可取消，**同名一律不覆盖**（跳过后在 Toast 里说清楚）；浮窗里给压缩包摘要（格式 / 条目数 / 解压后大小 / 是否加密 / 顶层前 12 项）。包内只读：写操作能力位全关，复制/剪切/重命名/删除在菜单里置灰。插件未做，接口已留 |
+| 文件管理 | ✅ M1a + M1b | 常驻收藏栏（常用位置 + 可增删收藏夹）+ 等比双面板（窗口任何宽度左右等宽）+ 响应式列宽；导航 / 四列排序 / 过滤 / 隐藏文件 / 多选 / 快捷键 / 状态持久化。M1b 预览是**独立无边框窗口**：默认占屏幕右半边（1920×1080 → 960×972），可拖四边四角缩放、可拖出主窗口、始终置顶（能浮在 Excel 等其他应用上）、拖动标题栏移动、双击复位、几何记进 state.json；空格打开、Esc/空格关闭、↑↓ 切换相邻项并同步主窗口选中项；图片按宽度铺满（竖图/长页可上下滚动）、文本按宽度折行、**PDF 按页竖排滚动**（加密 PDF 弹密码框，Enter 解锁、错密码留在框里重试，同一文件本次会话只问一次）；五种预览器（图片/PDF/文本/文件夹摘要/兜底信息卡）；**设置统一到主窗口左下角**（全应用唯一入口，分「文件浏览 / 工作时段 / 预览清晰度」三组）：显示隐藏文件（全局一份，两栏同步）、目录自动刷新开关、顶栏上下班时间（原来硬编码 12:00/18:00）、图片与 PDF 清晰度（标准 / 清晰 / 极高），改完即时生效并记住；文件列表的类型点按类型着色（目录蓝、图片紫、PDF 珊瑚红、其余浅灰），一眼看出哪些能预览。**写操作 M1c**：跟系统剪贴板双向互通（同时写 `text/uri-list` 和 `x-special/gnome-copied-files`，能和文件管理器互拷）、Ctrl+C/X/V、粘贴同名自动加序号（`报告.pdf` → `报告 (1).pdf`，从不覆盖）、F2 / Ctrl+Shift+N 行内改名（预选主干不选扩展名，Enter 提交、Esc 取消、点到别处也算提交）、Delete 移回收站（freedesktop 规范，跨分区落 `.Trash-<uid>`）、Shift+Delete 永久删除（必过确认框）、**自绘右键菜单**（样式走 Theme，不进系统；「预览」= 浮窗 + 空格，「打开」= 系统默认程序 + Ctrl+Enter）；后台分块复制、带进度、可取消；**M2 起步：目录自动刷新**（QFileSystemWatcher 只挂当前目录，350ms 防抖 + 800ms 最小间隔，设置面板里可关）。**M2 压缩包**：ZIP / TAR 家族（含 .tar.gz/.bzip2/.xz）**双击当目录逛**（`zip+file://` 走 FileSource 注册表，面板零改动），RAR / 7z 有外部程序（7z / unrar / bsdtar）时同等待遇、没有就降级成「能列不能解」并给出安装提示；裸 .gz/.bz2/.xz 单文件流式解压；右键「解压到此处 / 解压到独立文件夹 / 压缩为 ZIP」（ZIP_DEFLATED，已压过的类型直接 store），后台分块、带进度、可取消，**同名一律不覆盖**（跳过后在 Toast 里说清楚）；浮窗里给压缩包摘要（格式 / 条目数 / 解压后大小 / 是否加密 / 顶层前 12 项）。包内只读：写操作能力位全关，复制/剪切/重命名/删除在菜单里置灰。**M2 Office 预览**：docx / xlsx / pptx / odt 走 LibreOffice 无头转 PDF（设置面板「Office 版面」控制，**默认开**），产物落进 `~/.cache/workspace/office/`（缓存键 = 真实路径 + mtime + size，按 mtime 淘汰到 300MB / 120 份以内），转出来的就是一份真 PDF，**翻页 / 缩放三档 / 加密解锁全部复用 PDF 管线**（kind 报 pdf、payload 带 `sourceKind: "office"` 让标题图标仍认 Word）；关掉开关或没装 soffice 时回落纯 Python 抽文字（标准库拆 OOXML，1600 段约 30ms），`.doc` / `.wps` / `.rtf` 借 antiword / catdoc / unrtf；加密文档（OOXML 加密后是 OLE 而非 zip）、内嵌实体、转换失败都给中文提示并保住文字兜底，不会白屏。插件未做，接口已留 |
 
 ## 旧数据迁移（重装麒麟后）
 
@@ -85,15 +85,17 @@ workspace/
     vpath.py / entries.py / listing.py / cancel.py / state.py
     locations.py                    常用位置（XDG user-dirs 感知，零 Qt）
     archives.py                     M2 压缩包：格式识别 / 成员索引 / 解压 / 压缩（零 Qt）
+    office.py                       M2 Office：LibreOffice 转 PDF（带缓存）/ 纯 Python 抽文字
     sources/{__init__,local,archive}.py
                                     FileSource 抽象 + 本地目录 + 压缩包内部（zip+file://）
     ops/                            写操作（零 Qt）：transfer 复制移动 / trash 回收站
                                     / naming 唯一命名 / clipboard dual-MIME
-    preview/                        两阶段预览器协议 + 六个内置预览器（零 Qt）
+    preview/                        两阶段预览器协议 + 七个内置预览器（零 Qt）
       base.py                       prepare(<10ms 出窗口) / view(后台加载) + 注册表
       textread.py / probe.py        安全文本读取与编码探测 / 纯 Python 图片尺寸探测
-      image.py / pdf.py / text.py / directory.py / archive.py / fallback.py
-                                     PDF 只校验文件头，栅格化在 pdf_pages.py
+      image.py / pdf.py / text.py / directory.py / archive.py / office.py / fallback.py
+                                     PDF 只校验文件头，栅格化在 pdf_pages.py；
+                                     office.py 转出 PDF 后直接复用同一条 PDF 管线
     selfcheck.py                   python -m filecore.selfcheck
   pdf_pages.py     PDF 页栅格化（PyMuPDF 优先、QtPdf 兜底；只出 QImage，不写盘）
   pdf_image_provider.py  QML 的 image://pdfpage —— 工作线程渲染 + 内存 LRU
@@ -117,7 +119,7 @@ workspace/
 
 ```bash
 .venv/bin/pyside6-qmllint qml/*.qml 2>&1 | grep '^Error'   # 期望 0 行
-TMPDIR=$PWD/.tmp .venv/bin/python -m filecore.selfcheck     # 27 项全 OK（含等比布局、收藏状态、六种预览器、写操作、压缩包）
+TMPDIR=$PWD/.tmp .venv/bin/python -m filecore.selfcheck     # 31 项全 OK（含等比布局、收藏状态、七种预览器、写操作、压缩包、Office）
 FC_SELFCHECK_ITEMS=5000 TMPDIR=$PWD/.tmp .venv/bin/python -m filecore.selfcheck  # 重压测（可选）
 TMPDIR=$PWD/.tmp WORKSPACE_HOME=$PWD/.tmp/home QT_QPA_PLATFORM=offscreen \
   WS_SMOKE=1 .venv/bin/python main.py                     # 日志里不能有 QML 报错
@@ -232,9 +234,24 @@ TMPDIR=$PWD/.tmp WORKSPACE_HOME=$PWD/.tmp/home QT_QPA_PLATFORM=offscreen \
 14. **扫描结果与上一轮完全相同时不要 `set_entries`**。模型 reset 会让 ListView 重建全部委托，
     视觉上是「列表闪一下」，滚动位置也会抖；而自动刷新最常撞上的恰恰是这种空转（自己写盘
     引起的二次事件）。`FilePanel.handle_result` 里比对 rows，相同就只同步选中态。
+15. **Office 版面（M2）三个必须守住的点**。① **profile 必须隔离**：手工传
+    `-env:UserInstallation` 指到自己的缓存目录（`office._profile_uri()`）。用默认的
+    `~/.config/libreoffice` 时，用户正开着 Writer 那边是锁着的，转换会直接失败；但也不能
+    每次用临时目录 —— 每次都要重建 profile，白花 1~3 秒，热转换能压到 0.5~1.5 秒正是靠复用。
+    ② **取消/超时要杀进程组**：`CancelToken` 只 terminate 主进程，而 soffice 是壳、真正干活
+    的是 `soffice.bin`，只杀壳会留孤儿吃着 200MB（8GB 机器连翻几个 docx 就卡死）。Popen 时
+    `start_new_session=True`，先把 pgid 记下来（进程退出后查不到了），取消/超时走 `killpg`。
+    ③ **`.doc` 拆不了**：docx/xlsx/pptx 是 ZIP+XML，标准库能拆；`.doc` / `.wps` 是 OLE2
+    复合二进制，只能借 antiword / catdoc。另外 **OOXML 加密后不再是 zip**（整份变成 OLE
+    容器），`zipfile` 抛 `BadZipFile` 时要认成「已加密」并提示输密码，不能报「文件损坏」。
 
 ## 麒麟部署
 
 同一份源码 git 同步过去，麒麟上 `python3 -m venv .venv && pip install -r requirements.txt`
 （含 PyMuPDF；aarch64 有官方 wheel。装不上也不影响启动，会自动退回 QtPdf，只是 `/Widget` 签章不显示）
 即可跑（无构建链）。会话用 X11。界面缩放默认 1.25，按 `WORKSPACE_SCALE` 现场调档。
+
+Office 版面（Word / Excel 的版式渲染）要额外装 LibreOffice：`sudo apt install libreoffice-writer`
+（几百 MB，**WPS 替代不了** —— 它没有命令行转换接口）。没装也能用，只是 docx 只显示文字；
+设置面板里那行灰字会直接告诉你「没检测到 LibreOffice」。`.doc` / `.wps` / `.rtf` 抽文字另外
+需要 `antiword` / `catdoc` / `unrtf`（`install_kylin.sh` 里已经在装了）。

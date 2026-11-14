@@ -442,11 +442,14 @@ def _registry_and_preview():
     assert resolve("file:///tmp").scheme == "file"
     # M2：压缩包源已注册，同一个 vpath 能解析到 ArchiveSource
     assert resolve("zip+file:///a.zip!/").scheme == vpath.ARCHIVE
-    # M1b 五种 + M2 压缩包预览器，共 6 个，按 priority 降序（兜底永远最后）
-    assert len(preview_base.REGISTRY) == 6, preview_base.REGISTRY
+    # M1b 五种 + M2 压缩包 + M2 Office，共 7 个，按 priority 降序（兜底永远最后）
+    assert len(preview_base.REGISTRY) == 7, preview_base.REGISTRY
     prios = [p.priority for p in preview_base.REGISTRY]
     assert prios == sorted(prios, reverse=True), prios
     assert prios[-1] == 0
+    # Office 必须夹在 PDF(35) 和文本(30) 之间：高了会抢 PDF，低了会被文本抢走 docx
+    from .preview.office import OfficePreviewer
+    assert OfficePreviewer.priority == 33
     spec = preview_base.PreviewSpec(kind="image", title="a.jpg")
     assert spec.kind == "image"
 
@@ -568,13 +571,20 @@ def _preview_pipeline():
         r = pb.pick(entry_of("fake.pdf")).view(entry_of("fake.pdf"), pb.PreviewContext())
         assert "文件头" in r.data["error"], r.data
 
-        # 其余类型一律兜底信息卡
+        # docx 从 M2 起由 OfficePreviewer 接管（不再是兜底卡）；坏包也得给提示
         put("plan.docx", b"not a real docx")
         e_doc = entry_of("plan.docx")
-        p = pb.pick(e_doc)
-        assert type(p).__name__ == "FallbackPreviewer"
-        r = p.view(e_doc, pb.PreviewContext())
-        assert r.kind == "fallback" and "办公文档" in r.data["hint"]
+        assert type(pb.pick(e_doc)).__name__ == "OfficePreviewer", type(pb.pick(e_doc)).__name__
+        r = pb.pick(e_doc).view(e_doc, pb.PreviewContext(office_layout=False))
+        assert r.kind == "office" and r.data["hint"], r.data
+
+        # 仍然没人管的类型才走兜底信息卡
+        put("clip.mkv", b"\x1a\x45\xdf\xa3" + b"\x00" * 32)
+        e_mkv = entry_of("clip.mkv")
+        p = pb.pick(e_mkv)
+        assert type(p).__name__ == "FallbackPreviewer", type(p).__name__
+        r = p.view(e_mkv, pb.PreviewContext())
+        assert r.kind == "fallback" and r.data["hint"], r.data
         assert pb.pick(None).__class__.__name__ == "FallbackPreviewer"
 
         # 图片头探测的其它格式
@@ -957,6 +967,234 @@ def _archives_text_and_source():
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+_W_NS = 'xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"'
+_S_NS = 'xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"'
+_A_NS = 'xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"'
+
+
+def _make_docx(path, n_para=40):
+    """造一份最小 docx：n_para 个段落 + 一张 2×2 表 + core.xml 元信息 + 一张图。"""
+    import zipfile
+    paras = "".join(
+        f"<w:p><w:r><w:t>段落 {i}</w:t></w:r></w:p>" for i in range(1, n_para + 1))
+    rows = "".join(
+        "<w:tr>" + "".join(f"<w:tc><w:p><w:r><w:t>格{r}{c}</w:t></w:r></w:p></w:tc>"
+                           for c in range(2)) + "</w:tr>"
+        for r in range(2))
+    doc = (f'<?xml version="1.0" encoding="UTF-8"?><w:document {_W_NS}>'
+           f"<w:body>{paras}<w:tbl>{rows}</w:tbl></w:body></w:document>")
+    core = ('<?xml version="1.0"?><cp:coreProperties xmlns:cp="http://schemas.'
+            'openxmlformats.org/package/2006/metadata/core-properties" '
+            'xmlns:dc="http://purl.org/dc/elements/1.1/">'
+            "<dc:title>季度报告</dc:title><dc:creator>Danny</dc:creator>"
+            "</cp:coreProperties>")
+    with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as z:
+        z.writestr("word/document.xml", doc)
+        z.writestr("docProps/core.xml", core)
+        z.writestr("word/media/a.png", b"\x89PNG")
+
+
+def _office_text():
+    """docx / xlsx / pptx 的纯 Python 抽文字：正文、表格、统计、元信息。"""
+    import zipfile
+
+    from . import office
+
+    tmp = tempfile.mkdtemp(prefix="ws-doc-")
+    try:
+        d = os.path.join(tmp, "报告.docx")
+        _make_docx(d)
+        r = office.read_text(d)
+        assert "段落 1" in r["text"] and "段落 40" in r["text"], r["text"][:80]
+        assert "\t" in r["text"], "表格行应当用制表符分隔"
+        assert r["stats"]["paragraphs"] >= 40, r["stats"]
+        assert r["stats"]["tables"] == 1, r["stats"]
+        assert r["stats"]["title"] == "季度报告", r["stats"]
+        assert r["stats"]["author"] == "Danny", r["stats"]
+        assert r["encrypted"] is False
+
+        x = os.path.join(tmp, "表.xlsx")
+        shared = "".join(f"<si><t>{t}</t></si>" for t in ("姓名", "部门", "张三"))
+        rows = ('<row r="1"><c r="A1" t="s"><v>0</v></c>'
+                '<c r="B1" t="s"><v>1</v></c></row>'
+                '<row r="2"><c r="A2" t="s"><v>2</v></c>'
+                '<c r="B2"><v>42</v></c></row>')
+        with zipfile.ZipFile(x, "w") as z:
+            z.writestr("xl/sharedStrings.xml",
+                       f'<?xml version="1.0"?><sst {_S_NS} count="3">{shared}</sst>')
+            z.writestr("xl/worksheets/sheet1.xml",
+                       f'<?xml version="1.0"?><worksheet {_S_NS}>'
+                       f"<sheetData>{rows}</sheetData></worksheet>")
+        r = office.read_text(x)
+        assert "姓名" in r["text"] and "张三" in r["text"], r["text"]
+        assert "42" in r["text"], "数值单元格也要抽出来"
+        assert r["stats"]["sheets"] == 1 and r["stats"]["rows"] == 2, r["stats"]
+
+        p = os.path.join(tmp, "演示.pptx")
+        with zipfile.ZipFile(p, "w") as z:
+            for i in (1, 2):
+                # 根元素别写 <p:sld> —— 没声明 p 前缀会直接 ParseError（unbound prefix），
+                # 抽文字只认 <a:t>，根叫什么无所谓。
+                z.writestr(f"ppt/slides/slide{i}.xml",
+                           f'<?xml version="1.0"?><sld {_A_NS}><a:t>第 {i} 页</a:t></sld>')
+        r = office.read_text(p)
+        assert "第 1 页" in r["text"] and "第 2 页" in r["text"], r["text"]
+        assert r["stats"]["slides"] == 2, r["stats"]
+
+        assert office.format_label(d) == "Word 文档"
+        assert office.is_office(d) and not office.is_office("a.txt")
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def _office_safety():
+    """加密 / 内嵌实体 / 旧格式 / 不存在：一律给中文提示，绝不抛。"""
+    import zipfile
+
+    from . import office
+
+    tmp = tempfile.mkdtemp(prefix="ws-doc-")
+    saved = office._TOOL_ENV
+    try:
+        enc = os.path.join(tmp, "加密.docx")
+        with open(enc, "wb") as f:
+            f.write(b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1" + b"\x00" * 64)
+        r = office.read_text(enc)
+        assert r["encrypted"] is True, r
+        assert "加密" in r["hint"], r["hint"]
+
+        ent = os.path.join(tmp, "实体.docx")
+        with zipfile.ZipFile(ent, "w") as z:
+            z.writestr("word/document.xml",
+                       '<?xml version="1.0"?><!DOCTYPE x [<!ENTITY a "aaa">]>'
+                       f"<w:document {_W_NS}><w:body/></w:document>")
+        r = office.read_text(ent)
+        assert "实体" in r["hint"], r["hint"]
+
+        office._TOOL_ENV = {"soffice": "", "antiword": "", "catdoc": "", "unrtf": ""}
+        old = os.path.join(tmp, "旧.doc")
+        with open(old, "wb") as f:
+            f.write(b"\xd0\xcf\x11\xe0" + b"\x00" * 128)
+        r = office.read_text(old)
+        assert "antiword" in r["hint"] or "catdoc" in r["hint"], r["hint"]
+
+        r = office.read_text(os.path.join(tmp, "没有.docx"))
+        assert r["text"] == "" and r["hint"], r
+    finally:
+        office._TOOL_ENV = saved
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def _office_previewer():
+    """开关分叉 / 假 soffice 真转一次 / 缓存命中 / 失败回落文字。"""
+    from . import office
+    from .preview import base as pb
+    from .sources import resolve
+
+    tmp = tempfile.mkdtemp(prefix="ws-doc-")
+    cache = os.path.join(tmp, "cache")
+    saved_env = os.environ.get("WORKSPACE_CACHE")
+    saved_tools = office._TOOL_ENV
+    os.environ["WORKSPACE_CACHE"] = cache
+    try:
+        path = os.path.join(tmp, "报告.docx")
+        _make_docx(path)
+        bootstrap()
+        vp = vpath.encode_path(path)
+        entry = resolve(vp).entry(vp)
+        pv = pb.pick(entry)
+        assert type(pv).__name__ == "OfficePreviewer", type(pv).__name__
+
+        # 开关关闭：不启动 LibreOffice，只给文字
+        out = pv.view(entry, pb.PreviewContext(office_layout=False))
+        assert out.kind == "office", out.kind
+        assert "段落 1" in out.data["text"]
+        assert "版面预览已关闭" in out.data["hint"], out.data["hint"]
+        assert out.data["sourceKind"] == "office"
+        assert any(row[0] == "段落" for row in out.data["detail"]), out.data["detail"]
+
+        # 开关开着但没装：提示装什么，同时仍然给文字（不能白屏）
+        office._TOOL_ENV = {"soffice": "", "antiword": "", "catdoc": "", "unrtf": ""}
+        out = pv.view(entry, pb.PreviewContext(office_layout=True))
+        assert out.kind == "office", out.kind
+        assert "LibreOffice" in out.data["hint"], out.data["hint"]
+        assert "段落 1" in out.data["text"]
+
+        # 假 soffice：真 Popen 一次，顺带验命令行参数（profile 隔离在这里）
+        fake = os.path.join(tmp, "fake-soffice")
+        args_file = os.path.join(tmp, "args.txt")
+        with open(fake, "w") as f:
+            f.write(
+                "#!/usr/bin/env python3\n"
+                "import os, sys\n"
+                "a = sys.argv[1:]\n"
+                "out = a[a.index('--outdir') + 1]\n"
+                "src = a[-1]\n"
+                "open(" + repr(args_file) + ", 'w').write(chr(10).join(a))\n"
+                "stem = os.path.splitext(os.path.basename(src))[0]\n"
+                "open(os.path.join(out, stem + '.pdf'), 'wb').write(b'%PDF-1.4' + b'x' * 200)\n"
+            )
+        os.chmod(fake, 0o755)
+        office._TOOL_ENV = {"soffice": fake, "antiword": "", "catdoc": "", "unrtf": ""}
+        office.clear_cache()
+
+        out = pv.view(entry, pb.PreviewContext(office_layout=True))
+        assert out.kind == "pdf", out.kind
+        pdf = out.data["localPath"]
+        assert os.path.isfile(pdf) and os.path.getsize(pdf) > 0, pdf
+        assert out.data["sourceKind"] == "office"
+        assert cache in pdf, pdf
+        args = open(args_file, encoding="utf-8").read()
+        assert "--headless" in args and "--norestore" in args, args
+        assert "--convert-to" in args and "pdf" in args, args
+        assert "-env:UserInstallation=" in args, "必须隔离 profile：" + args
+        # profile 必须落在自己的缓存目录里：用默认的 ~/.config/libreoffice 时，
+        # 用户开着 Writer 就会因为 profile 被锁而转换失败。
+        profile = args.split("-env:UserInstallation=")[1].split("\n")[0]
+        assert cache in profile, "profile 应在自己的缓存目录：" + profile
+
+        # 缓存命中：把假程序删了也照样出 PDF —— 证明没再起进程
+        os.unlink(fake)
+        out2 = pv.view(entry, pb.PreviewContext(office_layout=True))
+        assert out2.kind == "pdf", out2.kind
+        assert out2.data["localPath"] == pdf, out2.data["localPath"]
+
+        # 文件改过（mtime 变）→ 缓存必须失效
+        st = os.stat(path)
+        os.utime(path, (st.st_atime + 5, st.st_mtime + 5))
+        with open(fake + "2", "w") as f:
+            f.write("#!/usr/bin/env python3\nimport sys\nsys.exit(1)\n")
+        os.chmod(fake + "2", 0o755)
+        office._TOOL_ENV = {"soffice": fake + "2", "antiword": "", "catdoc": "", "unrtf": ""}
+        out3 = pv.view(entry, pb.PreviewContext(office_layout=True))
+        assert out3.kind == "office", out3.kind
+        assert "段落 1" in out3.data["text"], "转换失败必须回落到文字，不能白屏"
+    finally:
+        office._TOOL_ENV = saved_tools
+        if saved_env is None:
+            os.environ.pop("WORKSPACE_CACHE", None)
+        else:
+            os.environ["WORKSPACE_CACHE"] = saved_env
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def _office_state():
+    """officeLayout 的默认值与清洗：手改 JSON 写成 "true" 要回默认而不是静默翻真。"""
+    tmp = tempfile.mkdtemp(prefix="ws-doc-")
+    try:
+        cfg = os.path.join(tmp, "s.json")
+        assert state.default_state(tmp)["officeLayout"] is True
+        for raw, want in ((False, False), (True, True), ("true", True), (None, True)):
+            data = {"version": state.VERSION}
+            if raw is not None:
+                data["officeLayout"] = raw
+            state.save(cfg, data)
+            got = state.load(cfg, tmp)["officeLayout"]
+            assert got is want, (raw, got, want)
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 def _zero_qt():
     assert "PySide6" not in sys.modules
     assert "PyQt5" not in sys.modules
@@ -989,6 +1227,10 @@ def main() -> int:
         ("archives 压缩→列目录→解压→不覆盖", _archives_roundtrip),
         ("archives zip slip / 损坏包 / 无残留", _archives_safety),
         ("archives 包内文本 / ArchiveSource / 摘要预览", _archives_text_and_source),
+        ("office 抽文字 docx/xlsx/pptx", _office_text),
+        ("office 加密 / 实体 / 旧格式 / 不存在", _office_safety),
+        ("office 开关分叉 / 转换 / 缓存 / 回落", _office_previewer),
+        ("office officeLayout 持久化", _office_state),
         ("零 Qt 依赖", _zero_qt),
     ]:
         check(label, fn)

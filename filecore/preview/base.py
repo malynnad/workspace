@@ -41,6 +41,10 @@ class PreviewContext:
     max_text_lines: int = MAX_TEXT_LINES
     max_image_bytes: int = MAX_IMAGE_BYTES
     max_list_items: int = MAX_LIST_ITEMS
+    # Office 版面（LibreOffice 转 PDF）总开关。只有 office 预览器读它，其余类型
+    # 忽略。由设置面板经 FileManagerBackend 传进来 —— 不做成模块级全局变量，
+    # 是为了让探针能直接构造「关掉」的 ctx 验证回退路径。
+    office_layout: bool = True
 
 
 def common_meta(entry) -> dict:

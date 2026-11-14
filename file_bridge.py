@@ -23,6 +23,7 @@ from PySide6.QtGui import QDesktopServices, QGuiApplication
 
 import filecore
 from filecore import archives, listing, locations, state, vpath
+from filecore import office
 from filecore import ops
 from filecore.entries import kind_label
 from filecore.sources import UnknownScheme, capabilities_of, resolve
@@ -725,6 +726,7 @@ class FileManagerBackend(QObject):
     opChanged = Signal()
     autoRefreshChanged = Signal()
     autoRefreshRequested = Signal(str)      # 参数是 side：'left' / 'right'
+    officeLayoutChanged = Signal()
 
     def __init__(self, app_home, parent=None):
         super().__init__(parent)
@@ -761,6 +763,8 @@ class FileManagerBackend(QObject):
         self._last_tick = 0.0
         # ---- M2 目录自动刷新 ----
         self._auto_refresh = True
+        # ---- M2 Office 版面（LibreOffice 转 PDF）----
+        self._office_layout = True
         # 自己写盘时 watcher 也会触发：复制/删除/新建之后 after_change 已经刷过一次，
         # 这时候再来一轮就会把刚选中的结果冲掉。用这个时间戳压掉自产噪音。
         self._watch_ignore_until = 0.0
@@ -860,6 +864,29 @@ class FileManagerBackend(QObject):
     def autoRefresh(self):
         """目录自动刷新：监听当前目录，外部有增删改名就重扫一次。"""
         return self._auto_refresh
+
+    @Property(bool, notify=officeLayoutChanged)
+    def officeLayout(self):
+        """Office 版面：用 LibreOffice 把 docx/xlsx/pptx 转成 PDF 再渲染。
+
+        关掉就走纯 Python 抽文字（快但只有文字）。开关本身不影响是否装了
+        LibreOffice —— 没装的话开着也会自动回落到文字，见 officeLayoutStatus。
+        """
+        return self._office_layout
+
+    @Property("QVariantMap", notify=officeLayoutChanged)
+    def officeLayoutStatus(self):
+        """设置面板底下那行灰字：现在这条路是通的还是缺工具。
+
+        只查 PATH（tools() 有缓存），不扫缓存目录 —— 这个属性会被 QML 反复求值。
+        """
+        available = office.can_convert()
+        if available:
+            hint = "用 LibreOffice 转换成 PDF 再显示，能看完整版式；转一次会缓存，同文件再开是秒开"
+        else:
+            hint = ("没检测到 LibreOffice（soffice），现在只能显示文字。"
+                    "装一个（sudo apt install libreoffice-writer）才能看版式")
+        return {"available": available, "hint": hint}
 
     @Property("QVariantMap", notify=workScheduleChanged)
     def workSchedule(self):
@@ -1594,6 +1621,31 @@ class FileManagerBackend(QObject):
         self.autoRefreshChanged.emit()
         self._schedule_save()
 
+    @Slot(bool)
+    def setOfficeLayout(self, value):
+        """开关 Office 版面。
+
+        立即写进 PreviewProvider：预览任务是在提交那一刻读这个值的，所以下一次
+        打开文档就按新设置走。已经开着的那份不动 —— 中途换渲染方式会让窗口闪一下
+        重新加载，不如让它自然关掉。
+        Toast 是必要的：设置面板是浮层，改完关掉后用户看到的还是旧画面，不说一句
+        会以为开关没生效。
+        """
+        value = bool(value)
+        if value == self._office_layout:
+            return
+        self._office_layout = value
+        self._preview.office_layout = value
+        self.officeLayoutChanged.emit()
+        self._schedule_save()
+        if value:
+            if office.can_convert():
+                self.toast.emit("Office 版面已打开，下次打开文档生效")
+            else:
+                self.toast.emit("Office 版面已打开，但没检测到 LibreOffice")
+        else:
+            self.toast.emit("Office 版面已关闭，Word/Excel 只显示文字")
+
     @Slot(str, str, result=bool)
     def setWorkTime(self, which, text):
         """改工作时段。返回 False 表示没接受（格式不对或早于开始），QML 据此回填。
@@ -1682,6 +1734,7 @@ class FileManagerBackend(QObject):
             "leftWidth": self._left_width,
             "showHidden": self._show_hidden,
             "autoRefresh": self._auto_refresh,
+            "officeLayout": self._office_layout,
             "workSchedule": dict(self._work_schedule),
             "favorites": list(self._favorites),
             "previewWindow": dict(self._preview_window),
@@ -1701,6 +1754,10 @@ class FileManagerBackend(QObject):
                                    or state._clean_preview_prefs(None))
         self._show_hidden = bool(data.get("showHidden", False))
         self._auto_refresh = bool(data.get("autoRefresh", True))
+        self._office_layout = bool(data.get("officeLayout", True))
+        # 预览池在 __init__ 里已经建好了，这里把开关同步进去；否则设置里存着
+        # 「关」，第一次预览还是按默认 True 走了 LibreOffice。
+        self._preview.office_layout = self._office_layout
         self._work_schedule = dict(data.get("workSchedule")
                                    or state._clean_work(None))
         for side in ("left", "right"):
@@ -1711,6 +1768,7 @@ class FileManagerBackend(QObject):
         self.leftWidthChanged.emit()
         self.showHiddenChanged.emit()
         self.workScheduleChanged.emit()
+        self.officeLayoutChanged.emit()
         self.favoritesChanged.emit()      # 保险：QML 若已挂载，同步一次收藏列表
         self.previewPrefsChanged.emit()
 

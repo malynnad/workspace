@@ -173,6 +173,41 @@ Item {
                 bottomPadding: 4
             }
 
+            // ---- Office 版面（M2）----
+            // 开：LibreOffice 转 PDF，版式/表格/图片都对，代价是每份文档 1~8 秒
+            //     （转一次落盘缓存，同一个文件再开是秒开）。
+            // 关：纯 Python 拆包抽文字，30 毫秒出结果，但只有文字。
+            Item {
+                width: col.width
+                height: 34
+                Text {
+                    anchors.left: parent.left
+                    anchors.verticalCenter: parent.verticalCenter
+                    text: "Office 版面"
+                    font.pixelSize: 12
+                    color: Theme.text
+                }
+                Toggle {
+                    objectName: "officeLayoutToggle"
+                    anchors.right: parent.right
+                    anchors.verticalCenter: parent.verticalCenter
+                    checked: files.officeLayout
+                    onToggled: function(v) { files.setOfficeLayout(v) }
+                }
+            }
+
+            Text {
+                objectName: "officeLayoutHint"
+                width: col.width
+                // 没装 LibreOffice 时这句要显眼：用户以为打开了开关就有版面，
+                // 结果还是文字，会以为是 bug。改用 warn 色把原因说清楚。
+                text: files.officeLayoutStatus.hint
+                font.pixelSize: 10
+                color: files.officeLayoutStatus.available ? Theme.textMuted : Theme.warn
+                wrapMode: Text.Wrap
+                bottomPadding: 4
+            }
+
             // ---- 顶栏时钟 ----
             SectionLabel { text: "工作时段（顶栏倒计时）" }
 

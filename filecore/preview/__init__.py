@@ -15,10 +15,11 @@ def bootstrap():
     from .directory import DirectoryPreviewer
     from .fallback import FallbackPreviewer
     from .image import ImagePreviewer
+    from .office import OfficePreviewer
     from .pdf import PdfPreviewer
     from .text import TextPreviewer
 
     clear()
-    for cls in (ImagePreviewer, PdfPreviewer, TextPreviewer, ArchivePreviewer,
-                DirectoryPreviewer, FallbackPreviewer):
+    for cls in (ImagePreviewer, PdfPreviewer, OfficePreviewer, TextPreviewer,
+                ArchivePreviewer, DirectoryPreviewer, FallbackPreviewer):
         register(cls())
