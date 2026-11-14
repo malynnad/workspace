@@ -21,20 +21,35 @@ Item {
 
     // 以某个控件的左下角为锚点弹到它上方（左下角齿轮的常规弹出方向）。
     // 坐标一律走 mapToItem：齿轮在侧栏 ColumnLayout 里，直接拿 parent 会算错。
+    property var anchorItem: null
+
     function openAtItem(item) {
-        var p = item.mapToItem(root, 0, 0)
+        anchorItem = item
+        reposition()
+        syncTimeFields()
+        editingTypeId = -1          // 每次打开都退出改名态，别留着上次的输入框
+        root.visible = true
+    }
+
+    function reposition() {
+        if (!anchorItem)
+            return
+        var p = anchorItem.mapToItem(root, 0, 0)
         // 横向优先落在齿轮右侧：左侧栏露出来，切模块还能点；只有窗口窄到放不下
         // 才退回贴左（左侧栏 214 宽，最小窗口 1040 一定放得下，这里只是兜底）。
-        var preferX = p.x + item.width + 8
+        var preferX = p.x + anchorItem.width + 8
         panel.x = (preferX + panel.width + 8 <= root.width)
                   ? preferX
                   : Math.max(8, Math.min(p.x, root.width - panel.width - 8))
         panel.y = Math.max(8, Math.min(p.y - panel.height - 8,
                                        root.height - panel.height - 8))
-        syncTimeFields()
-        editingTypeId = -1          // 每次打开都退出改名态，别留着上次的输入框
-        root.visible = true
     }
+
+    // 面板打开着拖窗口（或改窗口尺寸）时位置必须跟着重算：
+    // 面板高度是封顶到窗口高的，只算一次的话缩小窗口会把它顶到底边外面，
+    // 最下面几行直接看不见。
+    onWidthChanged: if (root.visible) reposition()
+    onHeightChanged: if (root.visible) reposition()
 
     function close() {
         if (!root.visible)
@@ -495,6 +510,7 @@ Item {
                 SectionLabel { text: "预览清晰度" }
 
                 QualityPicker {
+                    objectName: "imageQualityPicker"
                     width: col.width
                     title: "图片"
                     choices: root.qualityChoices
@@ -503,6 +519,7 @@ Item {
                 }
 
                 QualityPicker {
+                    objectName: "pdfQualityPicker"
                     width: col.width
                     title: "PDF"
                     choices: root.qualityChoices
@@ -538,10 +555,12 @@ Item {
 
     // 档位表必须与 filecore/state.py 的 QUALITY_CHOICES 一一对应（后端还会过一遍
     // 白名单清洗），三处的 v 值写死同一个语义：1.0 / 1.5 / 2.0。
+    // mul 是段内那个倍数（比 label 更能说明代价：8GB 机器上清晰度就是内存）；
+    // desc 是轨道下方那句短说明，只显示当前档。
     readonly property var qualityChoices: [
-        { "v": 1.0, "label": "标准", "desc": "1 倍 · 最省内存" },
-        { "v": 1.5, "label": "清晰", "desc": "1.5 倍 · 边缘更实" },
-        { "v": 2.0, "label": "极高", "desc": "2 倍 · 最费内存" }
+        { "v": 1.0, "label": "标准", "mul": "1×", "desc": "1 倍像素 · 最省内存" },
+        { "v": 1.5, "label": "清晰", "mul": "1.5×", "desc": "1.5 倍像素 · 边缘更实" },
+        { "v": 2.0, "label": "极高", "mul": "2×", "desc": "2 倍像素 · 最费内存" }
     ]
     readonly property real pdfQuality: {
         var q = (files && files.previewPrefs) ? files.previewPrefs.pdfQuality : 0
