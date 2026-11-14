@@ -47,7 +47,15 @@ Item {
     // 换月 / 切到列表时格子会重建，被悬停的那个 item 直接销毁、收不到 exited，
     // 卡片会留在原地，所以这两处变化时主动收掉
     onDayCellsChanged: hideDayTip()
-    onShowingListChanged: hideDayTip()
+    // 「全部记录」是一次全表查询 + 15288 条转成 QML 的 var 数组（实测 Python 侧
+    // 150ms、跨语言 77ms；麒麟上大约再乘 3）。日历模式根本用不到它，所以只在真的
+    // 要看列表时才拉 —— 以前 Component.onCompleted 里无条件 refreshList()，等于
+    // 每次切进日志页都白付这笔钱。
+    onShowingListChanged: {
+        hideDayTip()
+        if (showingList)
+            refreshList()
+    }
     property string keyword: ""
     readonly property bool showingList: viewMode === 1 || keyword.length > 0
 
@@ -132,10 +140,12 @@ Item {
     Component.onCompleted: {
         rebuildDays()
         refreshCounts()
-        refreshList()
         backend.selectDate(dateStr)
         root.entryModel = backend.entries
         root.listModel = backend.listItems
+        // 上次退出时停在「全部记录」的话，这次进来就该有数据
+        if (root.showingList)
+            refreshList()
     }
 
     Connections {
@@ -639,7 +649,11 @@ Item {
                                 anchors.verticalCenter: parent.verticalCenter
                                 spacing: 8
                                 Text {
-                                    text: modelData.label
+                                    // entry 项没有 label 字段。绑定不受 visible 管，
+                                    // 直接写 modelData.label 会在每一行 entry 上求值成
+                                    // undefined → "Unable to assign [undefined] to QString"，
+                                    // 15000 条滚起来能刷满日志。
+                                    text: modelData.label || ""
                                     font.pixelSize: 12
                                     font.weight: Font.DemiBold
                                     color: Theme.text
@@ -650,7 +664,7 @@ Item {
                                     color: Theme.line
                                 }
                                 Text {
-                                    text: modelData.count + " 条"
+                                    text: (modelData.count || 0) + " 条"
                                     font.pixelSize: 11
                                     color: Theme.textMuted
                                 }
