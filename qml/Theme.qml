@@ -17,14 +17,17 @@ QtObject {
     readonly property color ok: "#3FB984"
     // 文件类型点：只有「能预览 / 有专门处理」的类型才上色，其余走 line 灰，
     // 一眼就能看出哪些文件点开有内容。值不与动作色共用意（danger 是删除）。
-    readonly property color image: "#7C6BF0"         // 图片（与待办同紫，语义独立）
-    readonly property color pdf: "#E2694F"           // PDF（珊瑚红，比 danger 偏暖）
+    // 全部压在同一档低饱和上（HSL S≈0.24 / L≈0.44），色相拉开、亮度齐平 ——
+    // accent 蓝是唯一的「亮」色（S=1.0 / L=0.71），类型点饱和度一上来就会跟文件夹抢视线。
+    readonly property color image: "#67558A"         // 图片（低饱和紫，比 todo 的 #7C6BF0 暗一档）
+    readonly property color pdf: "#557E8A"           // PDF（灰青，别用红系抢 danger）
+    readonly property color archive: "#8A6F55"       // 压缩包（灰褐，纸箱色）
 
     readonly property int radius: 16
     readonly property int radiusSm: 10
     readonly property int pad: 20
 
-    // 文件类型点的统一配色：目录蓝、图片紫、PDF 珊瑚红，其余（含文本/压缩包等
+    // 文件类型点的统一配色：目录蓝、图片紫、PDF 灰青、压缩包灰褐，其余（含文本等
     // 日常一大堆的类型）走 line 极浅灰 —— 全上色列表会花，只让需要一眼认出的跳出来。
     // 文件列表 delegate 不许用 Icon（软渲染约束），类型识别全靠这个小色块，
     // 所以两处（FmPanel 列表、文件夹预览）都走这里，别各写一套。
@@ -33,7 +36,15 @@ QtObject {
         case "folder": return accent
         case "image": return image
         case "pdf": return pdf
+        case "archive": return archive
         default: return line
         }
+    }
+
+    // 同上，但「没专门颜色」时回落到 accent 而不是 line。
+    // 给预览窗标题栏图标用：图标本身是线描，走 line 就看不见了。
+    function kindAccent(kind) {
+        var c = kindColor(kind)
+        return c === line ? accent : c
     }
 }

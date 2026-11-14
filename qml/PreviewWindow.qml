@@ -474,7 +474,9 @@ Window {
                         width: 20; height: 20
                         name: root.pvKind === "directory" ? "folder"
                               : (root.pvKind === "archive" ? "archive" : "file")
-                        color: Theme.accent
+                        // 图标跟着类型走色：压缩包灰褐、图片紫、PDF 灰青，其余回落 accent
+                        color: Theme.kindAccent(root.pvKind === "directory" ? "folder"
+                                                                           : root.pvKind)
                     }
                     Column {
                         anchors.left: parent.left
