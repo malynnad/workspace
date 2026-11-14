@@ -67,7 +67,7 @@ python3 -m venv .venv
 | 日志→待办 | ✅ | 日志编辑器里「转为待办」按钮，content 取主题或正文首行 |
 | 脚本面板 | ✅ | 扫描 scripts 目录、QProcess 运行、输出回显、双击即跑 |
 | 模板回复 | 未做 | 表已建（templates），UI 阶段 1 后期加，可开关 |
-| 文件管理 | ✅ M1a + M1b | 常驻收藏栏（常用位置 + 可增删收藏夹）+ 等比双面板（窗口任何宽度左右等宽）+ 响应式列宽；导航 / 四列排序 / 过滤 / 隐藏文件 / 多选 / 快捷键 / 状态持久化。M1b 预览是**独立无边框窗口**：默认占屏幕右半边（1920×1080 → 960×972），可拖四边四角缩放、可拖出主窗口、始终置顶（能浮在 Excel 等其他应用上）、拖动标题栏移动、双击复位、几何记进 state.json；空格打开、Esc/空格关闭、↑↓ 切换相邻项并同步主窗口选中项；图片按宽度铺满（竖图/长页可上下滚动）、文本按宽度折行、**PDF 按页竖排滚动**（加密 PDF 弹密码框，Enter 解锁、错密码留在框里重试，同一文件本次会话只问一次）；五种预览器（图片/PDF/文本/文件夹摘要/兜底信息卡）；**设置统一到主窗口左下角**（全应用唯一入口，分「文件浏览 / 工作时段 / 预览清晰度」三组）：显示隐藏文件（全局一份，两栏同步）、目录自动刷新开关、顶栏上下班时间（原来硬编码 12:00/18:00）、图片与 PDF 清晰度（标准 / 清晰 / 极高），改完即时生效并记住；文件列表的类型点按类型着色（目录蓝、图片紫、PDF 珊瑚红、其余浅灰），一眼看出哪些能预览。**写操作 M1c**：跟系统剪贴板双向互通（同时写 `text/uri-list` 和 `x-special/gnome-copied-files`，能和文件管理器互拷）、Ctrl+C/X/V、粘贴同名自动加序号（`报告.pdf` → `报告 (1).pdf`，从不覆盖）、F2 / Ctrl+Shift+N 行内改名（预选主干不选扩展名，Enter 提交、Esc 取消、点到别处也算提交）、Delete 移回收站（freedesktop 规范，跨分区落 `.Trash-<uid>`）、Shift+Delete 永久删除（必过确认框）、**自绘右键菜单**（样式走 Theme，不进系统；「预览」= 浮窗 + 空格，「打开」= 系统默认程序 + Ctrl+Enter）；后台分块复制、带进度、可取消；**M2 起步：目录自动刷新**（QFileSystemWatcher 只挂当前目录，350ms 防抖 + 800ms 最小间隔，设置面板里可关）。压缩包、插件未做，接口已留 |
+| 文件管理 | ✅ M1a + M1b | 常驻收藏栏（常用位置 + 可增删收藏夹）+ 等比双面板（窗口任何宽度左右等宽）+ 响应式列宽；导航 / 四列排序 / 过滤 / 隐藏文件 / 多选 / 快捷键 / 状态持久化。M1b 预览是**独立无边框窗口**：默认占屏幕右半边（1920×1080 → 960×972），可拖四边四角缩放、可拖出主窗口、始终置顶（能浮在 Excel 等其他应用上）、拖动标题栏移动、双击复位、几何记进 state.json；空格打开、Esc/空格关闭、↑↓ 切换相邻项并同步主窗口选中项；图片按宽度铺满（竖图/长页可上下滚动）、文本按宽度折行、**PDF 按页竖排滚动**（加密 PDF 弹密码框，Enter 解锁、错密码留在框里重试，同一文件本次会话只问一次）；五种预览器（图片/PDF/文本/文件夹摘要/兜底信息卡）；**设置统一到主窗口左下角**（全应用唯一入口，分「文件浏览 / 工作时段 / 预览清晰度」三组）：显示隐藏文件（全局一份，两栏同步）、目录自动刷新开关、顶栏上下班时间（原来硬编码 12:00/18:00）、图片与 PDF 清晰度（标准 / 清晰 / 极高），改完即时生效并记住；文件列表的类型点按类型着色（目录蓝、图片紫、PDF 珊瑚红、其余浅灰），一眼看出哪些能预览。**写操作 M1c**：跟系统剪贴板双向互通（同时写 `text/uri-list` 和 `x-special/gnome-copied-files`，能和文件管理器互拷）、Ctrl+C/X/V、粘贴同名自动加序号（`报告.pdf` → `报告 (1).pdf`，从不覆盖）、F2 / Ctrl+Shift+N 行内改名（预选主干不选扩展名，Enter 提交、Esc 取消、点到别处也算提交）、Delete 移回收站（freedesktop 规范，跨分区落 `.Trash-<uid>`）、Shift+Delete 永久删除（必过确认框）、**自绘右键菜单**（样式走 Theme，不进系统；「预览」= 浮窗 + 空格，「打开」= 系统默认程序 + Ctrl+Enter）；后台分块复制、带进度、可取消；**M2 起步：目录自动刷新**（QFileSystemWatcher 只挂当前目录，350ms 防抖 + 800ms 最小间隔，设置面板里可关）。**M2 压缩包**：ZIP / TAR 家族（含 .tar.gz/.bzip2/.xz）**双击当目录逛**（`zip+file://` 走 FileSource 注册表，面板零改动），RAR / 7z 有外部程序（7z / unrar / bsdtar）时同等待遇、没有就降级成「能列不能解」并给出安装提示；裸 .gz/.bz2/.xz 单文件流式解压；右键「解压到此处 / 解压到独立文件夹 / 压缩为 ZIP」（ZIP_DEFLATED，已压过的类型直接 store），后台分块、带进度、可取消，**同名一律不覆盖**（跳过后在 Toast 里说清楚）；浮窗里给压缩包摘要（格式 / 条目数 / 解压后大小 / 是否加密 / 顶层前 12 项）。包内只读：写操作能力位全关，复制/剪切/重命名/删除在菜单里置灰。插件未做，接口已留 |
 
 ## 旧数据迁移（重装麒麟后）
 
@@ -84,13 +84,15 @@ workspace/
   filecore/        文件管理纯逻辑层（零 Qt 依赖）
     vpath.py / entries.py / listing.py / cancel.py / state.py
     locations.py                    常用位置（XDG user-dirs 感知，零 Qt）
-    sources/{__init__,local}.py     FileSource 抽象与本地实现
+    archives.py                     M2 压缩包：格式识别 / 成员索引 / 解压 / 压缩（零 Qt）
+    sources/{__init__,local,archive}.py
+                                    FileSource 抽象 + 本地目录 + 压缩包内部（zip+file://）
     ops/                            写操作（零 Qt）：transfer 复制移动 / trash 回收站
                                     / naming 唯一命名 / clipboard dual-MIME
-    preview/                        两阶段预览器协议 + 五个内置预览器（零 Qt）
+    preview/                        两阶段预览器协议 + 六个内置预览器（零 Qt）
       base.py                       prepare(<10ms 出窗口) / view(后台加载) + 注册表
       textread.py / probe.py        安全文本读取与编码探测 / 纯 Python 图片尺寸探测
-      image.py / pdf.py / text.py / directory.py / fallback.py
+      image.py / pdf.py / text.py / directory.py / archive.py / fallback.py
                                      PDF 只校验文件头，栅格化在 pdf_pages.py
     selfcheck.py                   python -m filecore.selfcheck
   pdf_pages.py     PDF 页栅格化（PyMuPDF 优先、QtPdf 兜底；只出 QImage，不写盘）
@@ -115,7 +117,7 @@ workspace/
 
 ```bash
 .venv/bin/pyside6-qmllint qml/*.qml 2>&1 | grep '^Error'   # 期望 0 行
-TMPDIR=$PWD/.tmp .venv/bin/python -m filecore.selfcheck     # 23 项全 OK（含等比布局、收藏状态、五种预览器、写操作）
+TMPDIR=$PWD/.tmp .venv/bin/python -m filecore.selfcheck     # 27 项全 OK（含等比布局、收藏状态、六种预览器、写操作、压缩包）
 FC_SELFCHECK_ITEMS=5000 TMPDIR=$PWD/.tmp .venv/bin/python -m filecore.selfcheck  # 重压测（可选）
 TMPDIR=$PWD/.tmp WORKSPACE_HOME=$PWD/.tmp/home QT_QPA_PLATFORM=offscreen \
   WS_SMOKE=1 .venv/bin/python main.py                     # 日志里不能有 QML 报错

@@ -59,7 +59,6 @@ def read_text(path: str, max_bytes: int = MAX_TEXT_BYTES,
     except OSError as exc:
         out["error"] = f"读取失败：{exc}"
         return out
-    out["size"] = int(size)
     limit = min(size, max_bytes)
     try:
         with open(path, "rb") as f:
@@ -70,6 +69,17 @@ def read_text(path: str, max_bytes: int = MAX_TEXT_BYTES,
     if cancel is not None and cancel.is_cancelled():
         out["error"] = "已取消"
         return out
+    return decode_text(head, size, max_bytes, max_lines)
+
+
+def decode_text(head: bytes, size: int, max_bytes: int = MAX_TEXT_BYTES,
+                max_lines: int = MAX_TEXT_LINES) -> dict:
+    """已读到的字节 → 文本结果。文件与压缩包内成员共用这一份解码逻辑。
+
+    head 是「前 min(size, max_bytes) 字节」，size 是完整大小（用来判断是否截断）。
+    """
+    out = {"text": "", "encoding": "", "lines": 0, "truncated": False,
+           "binary": False, "size": int(size or 0), "error": ""}
     if not head:
         return out
 

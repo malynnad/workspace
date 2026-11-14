@@ -1,12 +1,13 @@
-"""兜底信息卡：所有没被前三种预览器接住的文件都走这里（只读元信息）。"""
+"""兜底信息卡：所有没被前几种预览器接住的文件都走这里（只读元信息）。"""
 
 from __future__ import annotations
 
+from .. import vpath
 from .base import PreviewPayload, PreviewSpec, common_meta
 
 HINTS = {
-    "pdf": "这份 PDF 无法预览（压缩包内的 PDF 尚未接入）",
-    "archive": "压缩包内容预览将在 M2 加入",
+    "pdf": "这份 PDF 无法预览（文件可能已损坏）",
+    "archive": "压缩包内容读不出来（格式不支持，或文件已损坏）",
     "office": "办公文档预览暂未接入",
     "video": "视频预览暂未接入",
     "audio": "音频预览暂未接入",
@@ -28,9 +29,21 @@ class FallbackPreviewer:
     def view(self, entry, ctx) -> PreviewPayload:
         data = dict(common_meta(entry))
         data["kind"] = entry.kind
-        data["hint"] = HINTS.get(entry.kind, "此类型暂不支持预览内容")
+        data["hint"] = _hint(entry)
         data["error"] = ""
         return PreviewPayload("fallback", data)
 
     def cleanup(self) -> None:
         return None
+
+
+def _hint(entry) -> str:
+    try:
+        in_archive = vpath.parse(entry.vpath)[0] == vpath.ARCHIVE
+    except (ValueError, TypeError):
+        in_archive = False
+    if in_archive and entry.kind not in ("text", "code"):
+        # 包内的图片/PDF/视频都没有物理路径可交给解码器。文本/代码自己会走文本预览器，
+        # 到不了这里；能到这儿的都是「必须先解压」的。
+        return "压缩包内的这类文件需要先解压到本地才能预览"
+    return HINTS.get(entry.kind, "此类型暂不支持预览内容")

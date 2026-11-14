@@ -66,14 +66,22 @@ class LocalSource(FileSource):
     def capabilities(self, v: str) -> dict:
         """本地目录的能力位。M1c 已接上写操作，四个写位翻 True；
         具体「这一下点不点得动」由上层结合选中数、剪贴板内容、面板 busy 判断，
-        这里只回答「这个源支不支持这类操作」。"""
+        这里只回答「这个源支不支持这类操作」。
+
+        M2 加的两个压缩包位：canExtract = 选中的压缩包能解压（解到本地），
+        canCompress = 能在这里新建 zip。archiveView 用来区分「在压缩包里」和
+        「在真实目录里」—— 右键菜单里那几项压缩/解压条目按它分叉。
+        """
         return {
             "canWrite": True,
             "canPaste": True,
             "canRename": True,
             "canTrash": True,
             "canPreview": True,
-            "canArchive": False,
+            "canArchive": False,          # M3 的命令行槽位用，别动
+            "canExtract": True,
+            "canCompress": True,
+            "archiveView": False,
             "sources": ["file"],
             "watch": False,
             "recursiveSearch": False,

@@ -36,3 +36,11 @@ class CancelToken:
                 proc.terminate()
             except Exception:
                 pass
+
+    def detach(self, proc):
+        """子进程正常结束后摘掉句柄，别让 token 一直捏着已经退出的 Popen 对象。"""
+        with self._lock:
+            try:
+                self._procs.remove(proc)
+            except ValueError:
+                pass

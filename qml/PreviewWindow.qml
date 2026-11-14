@@ -74,6 +74,23 @@ Window {
         return Math.max(320, Math.min(4096, want))
     }
     readonly property string pdfToken: root.pvData.token || ""
+    // 目录摘要 / 压缩包摘要共用一个标题行（两边 payload 形状一致，别写两套排版）
+    function dirSummary() {
+        return "共 " + (root.pvData.count || 0) + " 项 · " +
+               (root.pvData.dirCount || 0) + " 个文件夹 · " +
+               (root.pvData.fileCount || 0) + " 个文件 · 合计 " +
+               (root.pvData.totalText || "0 B")
+    }
+    function archiveSummary() {
+        var d = root.pvData
+        var s = (d.format || "压缩包") + " · " + (d.count || 0) + " 项 · 解压后 " +
+                (d.totalText || "0 B")
+        if (d.packedText)
+            s += " · 包 " + d.packedText
+        if (d.encrypted)
+            s += " · 已加密"
+        return s
+    }
     function pdfPageAspect(index) {
         if (index < 0 || index >= root.pvSizes.length)
             return 297 / 210
@@ -455,7 +472,8 @@ Window {
                         anchors.left: parent.left
                         anchors.verticalCenter: parent.verticalCenter
                         width: 20; height: 20
-                        name: root.pvKind === "directory" ? "folder" : "file"
+                        name: root.pvKind === "directory" ? "folder"
+                              : (root.pvKind === "archive" ? "archive" : "file")
                         color: Theme.accent
                     }
                     Column {
@@ -819,23 +837,30 @@ Window {
                         }
                     }
 
-                    // 文件夹摘要：统计 + 类型分布 + 前 12 项
+                    // 文件夹摘要 / 压缩包摘要：同一块 UI（数据形状一致，见 filecore/preview/
+                    // directory.py 与 archive.py）。压缩包多一行「格式 · 解压后大小 · 加密」。
                     Item {
                         id: dirBox
                         anchors.fill: parent
-                        visible: root.pvKind === "directory"
+                        visible: root.pvKind === "directory" || root.pvKind === "archive"
                         Column {
                             anchors.fill: parent
                             spacing: 8
                             Text {
-                                text: root.pvData.error ? root.pvData.error :
-                                      ("共 " + (root.pvData.count || 0) + " 项 · " +
-                                       (root.pvData.dirCount || 0) + " 个文件夹 · " +
-                                       (root.pvData.fileCount || 0) + " 个文件 · 合计 " +
-                                       (root.pvData.totalText || "0 B"))
+                                text: root.pvData.error ? root.pvData.error
+                                      : (root.pvKind === "archive" ? root.archiveSummary()
+                                                                   : root.dirSummary())
                                 font.pixelSize: 12
                                 font.weight: Font.DemiBold
                                 color: root.pvData.error ? Theme.danger : Theme.text
+                            }
+                            Text {
+                                visible: root.pvKind === "archive" && root.pvData.hint !== ""
+                                width: parent.width
+                                wrapMode: Text.Wrap
+                                text: root.pvData.hint || ""
+                                font.pixelSize: 11
+                                color: Theme.textMuted
                             }
                             Row {
                                 spacing: 6

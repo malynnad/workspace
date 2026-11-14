@@ -143,6 +143,21 @@ Item {
         return root.panel && root.panel.selectedCount > 0
     }
 
+    // 压缩包内部视图（zip+file://）：只读，菜单里那几个写操作要整组消失。
+    function inArchive() {
+        return root.panel ? root.panel.capabilities.archiveView === true : false
+    }
+
+    // 右键的那批里有没有压缩包 —— 决定「解压」两项显不显示
+    function hasArchiveSelection() {
+        var picked = root.menuTargets || []
+        for (var i = 0; i < picked.length; ++i) {
+            if (root.panel && root.panel.kindOf(picked[i]) === "archive")
+                return true
+        }
+        return false
+    }
+
     function isSelected(vp) {
         return root.panel ? root.panel.selectedVpaths().indexOf(vp) >= 0 : false
     }
@@ -191,6 +206,10 @@ Item {
         case "refresh": root.panel.refresh(); break
         case "terminal": files.openTerminal(root.panel.cwd); break
         case "copyCwd": files.copyPathText([root.panel.cwd]); break
+        // M2 压缩包：目标目录、进度、Toast 全在后端，这里只把「弹出那一刻的选中项」递过去
+        case "extractHere": files.extractPaths(root.menuTargets, false); break
+        case "extractFolder": files.extractPaths(root.menuTargets, true); break
+        case "compress": files.compressPaths(root.menuTargets); break
         }
     }
 
@@ -200,33 +219,60 @@ Item {
         var title = single && root.panel.info ? root.panel.info.name :
                     (count > 1 ? ("已选 " + count + " 项") : "未选择")
         var clipCount = files.clipboard.count
-        return [
+        var caps = root.panel ? root.panel.capabilities : ({})
+        var inArc = root.inArchive()
+        var items = [
             { header: true, label: title },
             { label: "预览", shortcut: "Space", enabled: single, action: "preview" },
-            { label: "打开", shortcut: "Ctrl+Enter", enabled: single, action: "open" },
+            { label: "打开", shortcut: "Ctrl+Enter", enabled: single && !inArc,
+              action: "open" }
+        ]
+
+        // 压缩包：本地视图给「解压到此处 / 独立文件夹」，包内视图只给「解到包旁边」
+        // —— 包里的东西终究得落到包外面去，那才是唯一可写的地方。
+        if (inArc) {
+            items.push({ separator: true },
+                       { label: "解压到压缩包旁的文件夹",
+                         enabled: count > 0 && caps.canExtract,
+                         action: "extractFolder" })
+        } else if (root.hasArchiveSelection()) {
+            items.push({ separator: true },
+                       { label: "解压到此处", action: "extractHere" },
+                       { label: "解压到独立文件夹", action: "extractFolder" })
+        }
+        if (!inArc && caps.canCompress) {
+            items.push({ label: "压缩为 ZIP", action: "compress" })
+        }
+
+        items.push({ separator: true },
+            { label: "复制", shortcut: "Ctrl+C", enabled: !inArc, action: "copy" },
+            { label: "剪切", shortcut: "Ctrl+X", enabled: !inArc, action: "cut" },
+            { label: "粘贴", shortcut: "Ctrl+V", enabled: clipCount > 0 && !inArc,
+              action: "paste" },
             { separator: true },
-            { label: "复制", shortcut: "Ctrl+C", action: "copy" },
-            { label: "剪切", shortcut: "Ctrl+X", action: "cut" },
-            { label: "粘贴", shortcut: "Ctrl+V", enabled: clipCount > 0, action: "paste" },
-            { separator: true },
-            { label: "重命名", shortcut: "F2", enabled: single, action: "rename" },
-            { label: "移到回收站", shortcut: "Delete", danger: true, action: "trash" },
+            { label: "重命名", shortcut: "F2", enabled: single && !inArc,
+              action: "rename" },
+            { label: "移到回收站", shortcut: "Delete", enabled: !inArc,
+              danger: true, action: "trash" },
             { separator: true },
             { label: "复制路径", action: "copyPath" },
-            { label: "新建文件夹", shortcut: "Ctrl+Shift+N", action: "newFolder" }
-        ]
+            { label: "新建文件夹", shortcut: "Ctrl+Shift+N", enabled: !inArc,
+              action: "newFolder" })
+        return items
     }
 
     function buildEmptyMenu() {
+        var inArc = root.inArchive()
         return [
-            { label: "粘贴", shortcut: "Ctrl+V", enabled: files.clipboard.count > 0,
-              action: "paste" },
-            { label: "新建文件夹", shortcut: "Ctrl+Shift+N", action: "newFolder" },
+            { label: "粘贴", shortcut: "Ctrl+V",
+              enabled: files.clipboard.count > 0 && !inArc, action: "paste" },
+            { label: "新建文件夹", shortcut: "Ctrl+Shift+N", enabled: !inArc,
+              action: "newFolder" },
             { separator: true },
             { label: "全选", shortcut: "Ctrl+A", action: "selectAll" },
             { label: "刷新", shortcut: "F5", action: "refresh" },
             { separator: true },
-            { label: "在终端中打开", action: "terminal" },
+            { label: "在终端中打开", enabled: !inArc, action: "terminal" },
             { label: "复制当前路径", action: "copyCwd" }
         ]
     }

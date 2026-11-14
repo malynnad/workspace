@@ -10,6 +10,7 @@ from __future__ import annotations
 
 def bootstrap():
     """注册内置预览器。重复调用是幂等的（先 clear 再注册）。"""
+    from .archive import ArchivePreviewer
     from .base import clear, register
     from .directory import DirectoryPreviewer
     from .fallback import FallbackPreviewer
@@ -18,6 +19,6 @@ def bootstrap():
     from .text import TextPreviewer
 
     clear()
-    for cls in (ImagePreviewer, PdfPreviewer, TextPreviewer,
+    for cls in (ImagePreviewer, PdfPreviewer, TextPreviewer, ArchivePreviewer,
                 DirectoryPreviewer, FallbackPreviewer):
         register(cls())

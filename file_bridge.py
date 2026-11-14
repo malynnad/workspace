@@ -22,7 +22,7 @@ from PySide6.QtCore import (QByteArray, QFileSystemWatcher, QMimeData, QObject,
 from PySide6.QtGui import QDesktopServices, QGuiApplication
 
 import filecore
-from filecore import listing, locations, state, vpath
+from filecore import archives, listing, locations, state, vpath
 from filecore import ops
 from filecore.entries import kind_label
 from filecore.sources import UnknownScheme, capabilities_of, resolve
@@ -269,7 +269,10 @@ class FilePanel(QObject):
     # ---------------- Slots：导航 ----------------
     @Slot(str)
     def openUri(self, text):
-        target = vpath.from_user(text, HOME)
+        # 地址栏里显示的是「/a/b.zip!/dir」这种可读形式（vpath.display 的输出），
+        # 用户原地回车时必须先还原回 zip+ scheme，否则会被当成本地绝对路径。
+        raw = (text or "").strip()
+        target = vpath.from_display(raw) or vpath.from_user(raw, HOME)
         if not target:
             self._set_status("路径无效")
             return
@@ -411,9 +414,25 @@ class FilePanel(QObject):
             return
         if item.get("isDir"):
             self.openUri(vp)
-        else:
-            # M1b：双击文件直接开浮窗预览（目录仍然是进入，见上一个分支）
-            self._backend._preview.request(vp)
+            return
+        if item.get("kind") == "archive":
+            # M2：双击压缩包 = 进去逛，跟双击文件夹同一手感。
+            # 进不去（rar/7z 没有外部工具）就退回浮窗摘要，让用户知道缺什么。
+            try:
+                local = vpath.to_local(vp)
+            except (ValueError, TypeError):
+                local = ""
+            if local and archives.can_browse(local):
+                self.openUri(vpath.encode_archive(local, ""))
+                return
+        # M1b：双击文件直接开浮窗预览（目录仍然是进入，见上一个分支）
+        self._backend._preview.request(vp)
+
+    @Slot(str, result=str)
+    def kindOf(self, vp):
+        """按 vpath 取类型（右键菜单要据此决定「解压 / 压缩」是否出现）。"""
+        item = self._by_vpath.get(str(vp))
+        return item.get("kind", "") if item else ""
 
     @Slot(int, result=str)
     def vpathAt(self, row):
@@ -971,6 +990,11 @@ class FileManagerBackend(QObject):
         if self._op_busy:
             self.toast.emit("正在处理上一个操作，请稍候")
             return
+        try:
+            vpath.to_local(panel.cwd)
+        except (ValueError, TypeError):
+            self.toast.emit("压缩包内不能粘贴，先解压到本地")
+            return
         clip = self._read_clipboard()
         if not clip["vpaths"]:
             self.toast.emit("剪贴板里没有可粘贴的文件")
@@ -991,6 +1015,8 @@ class FileManagerBackend(QObject):
     def trashPaths(self, vpaths):
         local = self._local_paths(vpaths)
         if not local:
+            if vpaths:
+                self.toast.emit("压缩包内不能删除文件，先解压到本地")
             return
         if self._op_busy:
             self.toast.emit("正在处理上一个操作，请稍候")
@@ -1005,6 +1031,8 @@ class FileManagerBackend(QObject):
     def deletePaths(self, vpaths):
         local = self._local_paths(vpaths)
         if not local:
+            if vpaths:
+                self.toast.emit("压缩包内不能删除文件，先解压到本地")
             return
         if self._op_busy:
             self.toast.emit("正在处理上一个操作，请稍候")
@@ -1032,6 +1060,172 @@ class FileManagerBackend(QObject):
             return
         self._runner.cancel(self._op_job)
         self.toast.emit("正在取消…")
+
+    # ---------------- M2：压缩包 ----------------
+    @Slot("QVariantList", bool)
+    def extractPaths(self, vpaths, into_folder):
+        """解压：本地压缩包（整包）或压缩包内选中的条目。
+
+        两条路都收在这一处，因为「目标目录」的推导是同一件事：
+        本地包 → 它所在目录；包内条目 → 容器所在目录（包里的东西总得落到包外面）。
+        into_folder=True 时先建「包名」文件夹再解进去（同名自动加序号）。
+        """
+        if self._op_busy:
+            self.toast.emit("正在处理上一个操作，请稍候")
+            return
+        jobs = []
+        seen = set()
+        for raw in (vpaths or []):
+            try:
+                scheme, container, inner = vpath.parse(str(raw))
+            except (ValueError, TypeError):
+                continue
+            if scheme == vpath.ARCHIVE:
+                if not container:
+                    continue
+                names = [inner] if inner else None
+                job = (container, os.path.dirname(container), tuple(names or ()))
+                label = inner or ""
+            else:
+                try:
+                    local = vpath.to_local(str(raw))
+                except (ValueError, TypeError):
+                    continue
+                if not archives.format_of(local) or not os.path.isfile(local):
+                    continue
+                job = (local, os.path.dirname(local), ())
+                label = ""
+            if job in seen:
+                continue
+            seen.add(job)
+            jobs.append((job[0], job[1], job[2], label))
+        if not jobs:
+            self.toast.emit("选中的项目里没有可解压的压缩包")
+            return
+
+        def run(cancel=None):
+            ok = 0
+            failed = []
+            skipped = 0
+            exists = 0
+            cancelled = False
+            opaque = False
+            paths = []
+            for container, dest, names, _label in jobs:
+                if cancel is not None and cancel.is_cancelled():
+                    cancelled = True
+                    break
+                res = archives.extract(container, dest, names=list(names) or None,
+                                       into_folder=into_folder, cancel=cancel,
+                                       tick=self._make_tick())
+                ok += int(res.get("ok", 0))
+                failed.extend(res.get("failed") or [])
+                skipped += int(res.get("skipped", 0))
+                exists += int(res.get("exists", 0))
+                opaque = opaque or bool(res.get("opaque"))
+                if res.get("path"):
+                    paths.append(res["path"])
+                if res.get("cancelled"):
+                    cancelled = True
+                    break
+            return {"ok": ok, "failed": failed, "skipped": skipped,
+                    "exists": exists, "cancelled": cancelled,
+                    "paths": paths, "opaque": opaque}
+
+        # 解压是写盘，watcher 会连打几十个事件；_start_op 已经压了时间窗，
+        # tick 里还会续窗（见 _make_tick），不会在解压过程中反复重扫。
+        self._start_op("正在解压…", None, run, self._after_extract)
+
+    @Slot("QVariantList")
+    def compressPaths(self, vpaths):
+        """把选中项压成一个 zip，落在活动面板的当前目录。"""
+        if self._op_busy:
+            self.toast.emit("正在处理上一个操作，请稍候")
+            return
+        panel = self._panels.get(self._active_side) or self._left
+        try:
+            dest_dir = vpath.to_local(panel.cwd)
+        except (ValueError, TypeError):
+            self.toast.emit("压缩包内不能新建压缩包，先解压到本地再压")
+            return
+        if not os.path.isdir(dest_dir):
+            self.toast.emit("当前目录不可写")
+            return
+        local = self._local_paths(vpaths)
+        if not local:
+            self.toast.emit("选中的项目不在本地磁盘上")
+            return
+        try:
+            name = ops.unique_name(dest_dir, archives.default_zip_name(local) + ".zip")
+        except OSError as exc:
+            self.toast.emit(str(exc))
+            return
+        dest = os.path.join(dest_dir, name)
+
+        def run(cancel=None):
+            return archives.compress_zip(local, dest, cancel=cancel,
+                                         tick=self._make_tick())
+
+        self._start_op("正在压缩…", panel, run,
+                       lambda result: self._after_compress(result, dest))
+
+    def _after_extract(self, result):
+        if not isinstance(result, dict):
+            self.toast.emit("解压失败")
+            return
+        for p in self._panels.values():
+            p.refresh()
+        parts = []
+        if result.get("ok"):
+            parts.append("已解压 %d 个文件" % int(result["ok"]))
+        elif result.get("opaque"):
+            parts.append("已解压")
+        if result.get("skipped"):
+            parts.append("%d 项已跳过（越界路径或符号链接）" % int(result["skipped"]))
+        if result.get("exists"):
+            # 「解压到此处」撞上同名文件：跳过、不覆盖。这条必须说出来，
+            # 否则用户会以为文件没解出来。
+            parts.append("%d 项同名已存在，未覆盖（改用「解压到独立文件夹」）"
+                         % int(result["exists"]))
+        failed = result.get("failed") or []
+        if failed:
+            parts.append("%d 项失败：%s" % (len(failed), failed[0].get("error", "")))
+        if result.get("cancelled"):
+            parts.append("已取消")
+        paths = [p for p in (result.get("paths") or []) if p]
+        if paths:
+            owner = self._panels.get(self._active_side) or self._left
+            owner.selectPaths(paths)
+        self.toast.emit("，".join(parts) or "没有解压出任何文件")
+
+    def _after_compress(self, result, dest):
+        if not isinstance(result, dict):
+            self.toast.emit("压缩失败")
+            return
+        for p in self._panels.values():
+            p.refresh()
+        failed = result.get("failed") or []
+        if failed:
+            self.toast.emit("压缩失败：%s" % failed[0].get("error", ""))
+            return
+        if result.get("cancelled"):
+            self.toast.emit("已取消压缩")
+            return
+        # 压缩落的目录未必是活动面板 —— 找真正装着它那一栏去选中。
+        target_vp = ""
+        try:
+            target_vp = vpath.encode_path(dest)
+        except (ValueError, TypeError):
+            pass
+        owner = None
+        for p in self._panels.values():
+            if target_vp and p.cwd == vpath.encode_path(os.path.dirname(dest)):
+                owner = p
+                break
+        if owner is not None and target_vp:
+            owner.selectPaths([target_vp])
+        self.toast.emit("已压缩 %d 个文件到 %s" % (int(result.get("ok", 0)),
+                                                 os.path.basename(dest)))
 
     def after_change(self, select=None, target=None):
         """同步操作（改名 / 新建文件夹）完成后：刷新两端并选中结果。"""
@@ -1125,11 +1319,14 @@ class FileManagerBackend(QObject):
     def _make_tick(self):
         """给工作线程用的进度节流器：最多 10Hz，且只在百分比变化时发。"""
         def tick(done, total):
+            now = time.monotonic()
+            # 还在写盘就给 watcher 抑制窗口续期：解压/压缩动辄几十秒、几万个事件，
+            # 只在 _start_op 里压 3 秒的话，中途会被 inotify 拽着反复全目录重扫。
+            self._watch_ignore_until = max(self._watch_ignore_until, now + 1.5)
             if total > 0:
                 pct = int(done * 100 / total)
             else:
                 pct = 100 if done else 0
-            now = time.monotonic()
             if pct < 100 and now - self._last_tick < 0.1:
                 return
             self._last_tick = now

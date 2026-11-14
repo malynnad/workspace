@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import os
 
-from .. import vpath
+from .. import archives, vpath
 from .base import PreviewPayload, PreviewSpec, common_meta
 from .textread import read_text
 
@@ -28,10 +28,16 @@ class TextPreviewer:
         return PreviewSpec(kind="text", title=entry.name, meta=common_meta(entry))
 
     def view(self, entry, ctx) -> PreviewPayload:
-        res = read_text(vpath.to_local(entry.vpath),
-                        max_bytes=ctx.max_text_bytes,
-                        max_lines=ctx.max_text_lines,
-                        cancel=ctx.cancel)
+        try:
+            local = vpath.to_local(entry.vpath)
+        except (ValueError, TypeError):
+            # 压缩包里的文本/代码：直接从包里流式读前 N 字节，不用先解压。
+            # 这是唯一支持「包内就地预览」的类型 —— 图片/PDF 还得先解出来。
+            res = archives.read_text_member(entry.vpath, ctx.max_text_bytes,
+                                            ctx.max_text_lines, ctx.cancel)
+        else:
+            res = read_text(local, max_bytes=ctx.max_text_bytes,
+                            max_lines=ctx.max_text_lines, cancel=ctx.cancel)
         if res["binary"]:
             # 没扩展名的小文件其实是二进制：换成兜底信息卡，别显示乱码
             data = dict(common_meta(entry))

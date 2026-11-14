@@ -14,11 +14,22 @@ from .base import PreviewPayload, PreviewSpec, common_meta
 BITMAP_EXT = {".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp"}
 
 
+def _is_local(v: str) -> bool:
+    try:
+        return vpath.parse(v)[0] == vpath.LOCAL
+    except (ValueError, TypeError):
+        return False
+
+
 class ImagePreviewer:
     priority = 40
 
     def can_handle(self, entry) -> bool:
         if entry.is_dir or entry.kind != "image":
+            return False
+        if not _is_local(entry.vpath):
+            # 压缩包里的图片：没有物理路径给 QML Image 解码，先解压再说。
+            # 交给兜底信息卡给出明确提示，别让 Image 去加载一个 zip+file:// URL 然后静默失败。
             return False
         return os.path.splitext(entry.name.lower())[1] in BITMAP_EXT
 

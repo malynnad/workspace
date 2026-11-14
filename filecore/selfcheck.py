@@ -10,6 +10,7 @@ import os
 import re
 import shutil
 import sys
+import tarfile
 import tempfile
 
 from . import bootstrap, state, vpath
@@ -439,14 +440,10 @@ def _registry_and_preview():
     from .sources import UnknownScheme, resolve
     bootstrap()
     assert resolve("file:///tmp").scheme == "file"
-    try:
-        resolve("zip+file:///a.zip!/")
-    except UnknownScheme:
-        pass
-    else:
-        raise AssertionError("M2 之前 zip+file 应当未注册")
-    # M1b：五种内置预览器已注册，且按 priority 降序（兜底永远最后）
-    assert len(preview_base.REGISTRY) == 5, preview_base.REGISTRY
+    # M2：压缩包源已注册，同一个 vpath 能解析到 ArchiveSource
+    assert resolve("zip+file:///a.zip!/").scheme == vpath.ARCHIVE
+    # M1b 五种 + M2 压缩包预览器，共 6 个，按 priority 降序（兜底永远最后）
+    assert len(preview_base.REGISTRY) == 6, preview_base.REGISTRY
     prios = [p.priority for p in preview_base.REGISTRY]
     assert prios == sorted(prios, reverse=True), prios
     assert prios[-1] == 0
@@ -751,10 +748,218 @@ def _ops_clipboard():
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+def _archives_format():
+    from . import archives
+
+    assert archives.format_of("a.zip") == "zip"
+    assert archives.format_of("A.JAR") == "zip"
+    assert archives.format_of("a.tar") == "tar"
+    # .tar.gz 必须先于 .gz 命中，否则会被当成裸 gzip
+    assert archives.format_of("a.tar.gz") == "tar"
+    assert archives.format_of("a.tar.bz2") == "tar"
+    assert archives.format_of("a.txz") == "tar"
+    assert archives.format_of("a.rar") == "rar"
+    assert archives.format_of("a.7z") == "7z"
+    assert archives.format_of("a.gz") == "gzip"
+    assert archives.format_of("a.txt") == ""
+    assert archives.format_of("") == ""
+    assert archives.stem_of("a.tar.gz") == "a"
+    assert archives.stem_of("x.zip") == "x"
+    assert archives.stem_of("noext") == "noext"
+    assert archives.default_zip_name(["/tmp/报告.docx"]) == "报告"
+    assert archives.default_zip_name(["/tmp/a", "/tmp/b"]) == "压缩包"
+
+
+def _archives_roundtrip():
+    """压缩 → 列目录 → 解压 → 不覆盖，一条链走完。"""
+    import gzip
+    from . import archives
+
+    tmp = tempfile.mkdtemp(prefix="fc_selfcheck_arc_")
+    try:
+        src = os.path.join(tmp, "素材")
+        os.makedirs(os.path.join(src, "子目录"))
+        with open(os.path.join(src, "说明.txt"), "w", encoding="utf-8") as f:
+            f.write("压缩包里的说明\n第二行\n")
+        with open(os.path.join(src, "子目录", "深.bin"), "wb") as f:
+            f.write(b"x" * 5000)
+        os.symlink(os.path.join(src, "说明.txt"), os.path.join(src, "链接"))
+
+        z = os.path.join(tmp, "包.zip")
+        # 符号链接跳过、不写进包（与解压侧的跳过策略对称）
+        r = archives.compress_zip([src], z)
+        assert r["ok"] == 2 and r["skipped"] == 1 and not r["failed"], r
+
+        base = vpath.encode_archive(z, "")
+        items, err, trunc = archives.list_dir(z, "", base)
+        assert err is None and not trunc
+        assert [e.name for e in items] == ["素材"], [e.name for e in items]
+        assert items[0].is_dir and items[0].vpath.startswith("zip+file://")
+
+        sub = vpath.encode_archive(z, "素材")
+        kids = {e.name: e for e in archives.list_dir(z, "素材", sub)[0]}
+        assert set(kids) == {"子目录", "说明.txt"}, set(kids)
+        assert kids["说明.txt"].size == len("压缩包里的说明\n第二行\n".encode("utf-8"))
+        assert kids["说明.txt"].kind == "text" and kids["子目录"].is_dir
+
+        out = os.path.join(tmp, "out")
+        os.makedirs(out)
+        r1 = archives.extract(z, out)
+        assert r1["ok"] == 2 and r1["exists"] == 0, r1
+        assert open(os.path.join(out, "素材", "说明.txt"), encoding="utf-8").read().startswith("压缩包里的说明")
+
+        # 同名不覆盖：本地改过的文件必须原样保留
+        with open(os.path.join(out, "素材", "说明.txt"), "w", encoding="utf-8") as f:
+            f.write("本地改过")
+        r2 = archives.extract(z, out)
+        assert r2["ok"] == 0 and r2["exists"] == 2, r2
+        assert open(os.path.join(out, "素材", "说明.txt"), encoding="utf-8").read() == "本地改过"
+
+        # 独立文件夹：名字取包名，撞名加序号
+        r3 = archives.extract(z, out, into_folder=True)
+        assert r3["ok"] == 2 and os.path.basename(r3["dir"]) == "包", r3
+        r4 = archives.extract(z, out, into_folder=True)
+        assert os.path.basename(r4["dir"]) == "包 (1)", r4
+
+        # 只解选中条目
+        r5 = archives.extract(z, out, names=["素材/说明.txt"])
+        assert r5["ok"] == 0 and r5["exists"] == 1, r5
+
+        # tar.gz：同一套语义
+        tgz = os.path.join(tmp, "包.tar.gz")
+        with tarfile.open(tgz, "w:gz") as tf:
+            tf.add(src, arcname="素材")
+        t_items = archives.list_dir(tgz, "", vpath.encode_archive(tgz, ""))[0]
+        assert [e.name for e in t_items] == ["素材"], [e.name for e in t_items]
+        o2 = os.path.join(tmp, "o2")
+        os.makedirs(o2)
+        assert archives.extract(tgz, o2)["ok"] == 2
+        assert os.path.getsize(os.path.join(o2, "素材", "子目录", "深.bin")) == 5000
+
+        # 裸 gzip：单成员，名字去后缀
+        gz = os.path.join(tmp, "note.txt.gz")
+        with gzip.open(gz, "wb") as f:
+            f.write("gz 内容".encode("utf-8"))
+        assert archives.format_of(gz) == "gzip"
+        assert [e.name for e in archives.list_dir(gz, "", vpath.encode_archive(gz, ""))[0]] == ["note.txt"]
+        o3 = os.path.join(tmp, "o3")
+        os.makedirs(o3)
+        assert archives.extract(gz, o3)["ok"] == 1
+        assert open(os.path.join(o3, "note.txt"), encoding="utf-8").read() == "gz 内容"
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def _archives_safety():
+    """zip slip / 损坏包 / 加密包：都必须「不写出去、给出中文错误」。"""
+    import zipfile as zf_mod
+    from . import archives
+
+    tmp = tempfile.mkdtemp(prefix="fc_selfcheck_arcbad_")
+    try:
+        evil = os.path.join(tmp, "evil.zip")
+        with zf_mod.ZipFile(evil, "w") as zf:
+            zf.writestr("../../逃出去.txt", "bad")
+            zf.writestr("/绝对路径.txt", "bad")
+            zf.writestr("正常.txt", "ok")
+        out = os.path.join(tmp, "out")
+        os.makedirs(out)
+        r = archives.extract(evil, out)
+        assert not os.path.exists(os.path.join(tmp, "逃出去.txt")), "zip slip 没挡住"
+        assert r["ok"] == 2 and r["skipped"] == 1, r       # ../ 被丢，绝对路径被剥成相对
+        assert not os.path.exists(os.path.join(out, "..", "..", "逃出去.txt"))
+
+        bad = os.path.join(tmp, "bad.zip")
+        with open(bad, "wb") as f:
+            f.write(b"not a zip")
+        items, err, _tr = archives.list_dir(bad, "", vpath.encode_archive(bad, ""))
+        assert items == [] and err and "损坏" in err, (items, err)
+        summary = archives.summary(bad)
+        assert summary["error"] and summary["count"] == 0
+
+        # 不认识的扩展名：不假装能处理
+        plain = os.path.join(tmp, "a.txt")
+        with open(plain, "w") as f:
+            f.write("x")
+        assert archives.format_of(plain) == ""
+        assert archives.summary(plain)["error"]
+
+        # 压缩只写进 .wspart 再改名：失败（没有可压内容）不能留下垃圾
+        empty = archives.compress_zip([], os.path.join(tmp, "空.zip"))
+        assert empty["ok"] == 0 and empty["failed"], empty
+        assert not any(n.endswith(".wspart") for n in os.listdir(tmp)), os.listdir(tmp)
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def _archives_text_and_source():
+    """包内文本预览 + ArchiveSource 的目录语义（这两块是「压缩包当目录逛」的地基）。"""
+    from . import archives
+    from .preview import base as pb
+    from .sources import SOURCE_REGISTRY, resolve
+
+    bootstrap()
+    assert vpath.ARCHIVE in SOURCE_REGISTRY, list(SOURCE_REGISTRY)
+
+    tmp = tempfile.mkdtemp(prefix="fc_selfcheck_arcsrc_")
+    try:
+        src = os.path.join(tmp, "资料")
+        os.makedirs(os.path.join(src, "子"))
+        with open(os.path.join(src, "说明.md"), "w", encoding="utf-8") as f:
+            f.write("# 标题\n正文\n")
+        with open(os.path.join(src, "子", "图.png"), "wb") as f:
+            f.write(b"\x89PNG\r\n\x1a\n" + b"0" * 32)
+        z = os.path.join(tmp, "资料.zip")
+        archives.compress_zip([src], z)
+
+        root = vpath.encode_archive(z, "")
+        source = resolve(root)
+        assert type(source).__name__ == "ArchiveSource"
+        assert source.exists(root) and source.is_dir(root)
+        entries = source.list_dir(root, False)[0]
+        assert [e.name for e in entries] == ["资料"]
+        inner_dir = vpath.join(root, "资料")
+        assert source.is_dir(inner_dir) and source.exists(inner_dir)
+        md = vpath.join(inner_dir, "说明.md")
+        assert source.exists(md) and not source.is_dir(md)
+        e = source.entry(md)
+        assert e.name == "说明.md" and e.size > 0 and e.kind in ("text", "code")
+
+        caps = source.capabilities(root)
+        assert caps["archiveView"] is True and caps["canWrite"] is False
+        assert caps["canExtract"] is True and caps["canCompress"] is False
+
+        # 地址栏可读形式能还原回 vpath（否则 Ctrl+L 回车就报「路径不存在」）
+        assert vpath.from_display(vpath.display(md)) == md
+        assert vpath.from_display("相对/路径.zip!/x") == ""
+
+        # 包内文本：直接从包里读，不解压
+        text = archives.read_text_member(md, 64 * 1024, 4000)
+        assert text["text"].startswith("# 标题"), text
+        payload = pb.pick(source.entry(md)).view(source.entry(md),
+                                                  pb.PreviewContext())
+        assert payload.kind == "text" and "标题" in payload.data["text"]
+
+        # 包内图片：没有物理路径，必须落到兜底卡并说清楚要先解压
+        png = vpath.join(inner_dir, "图.png")
+        picker = pb.pick(source.entry(png))
+        assert type(picker).__name__ == "FallbackPreviewer", type(picker).__name__
+        assert "解压" in picker.view(source.entry(png), pb.PreviewContext()).data["hint"]
+
+        # 压缩包本身的浮窗摘要
+        zp = vpath.encode_path(z)
+        zentry = resolve(zp).entry(zp)
+        summary = pb.pick(zentry).view(zentry, pb.PreviewContext())
+        assert summary.kind == "archive"
+        assert summary.data["count"] == 4 and summary.data["fileCount"] == 2, summary.data
+        assert summary.data["items"] and summary.data["items"][0]["name"] == "资料"
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 def _zero_qt():
     assert "PySide6" not in sys.modules
     assert "PyQt5" not in sys.modules
-
 
 def main() -> int:
     for label, fn in [
@@ -780,6 +985,10 @@ def main() -> int:
         ("ops 复制移动 / 同名重命名 / 取消不留残渣", _ops_transfer),
         ("ops 回收站规范 / 同名序号 / 目录", _ops_trash),
         ("ops 剪贴板 dual-MIME 往返 / cut 语义", _ops_clipboard),
+        ("archives 格式识别 / 包名主干", _archives_format),
+        ("archives 压缩→列目录→解压→不覆盖", _archives_roundtrip),
+        ("archives zip slip / 损坏包 / 无残留", _archives_safety),
+        ("archives 包内文本 / ArchiveSource / 摘要预览", _archives_text_and_source),
         ("零 Qt 依赖", _zero_qt),
     ]:
         check(label, fn)

@@ -147,3 +147,20 @@ def from_user(text: str, home: str) -> str:
     if os.path.isabs(t):
         return encode_path(t)
     return encode_path(os.path.join(home, t))
+
+
+def from_display(text: str) -> str:
+    """地址栏里的「可读压缩包路径」→ vpath：`/a/b.zip!/dir` → `zip+file:///a/b.zip!/dir`。
+
+    必须单独一条路：display() 的输出**不带** scheme（人读着舒服），用户在地址栏回车时
+    却要还原回 scheme —— 否则「在压缩包里按 Ctrl+L 再回车」会把它当成本地绝对路径，
+    报一句莫名其妙的「路径不存在」。
+    """
+    t = (text or "").strip().strip('"')
+    if not t or "://" in t or SEP not in t:
+        return ""
+    container, _sep, inner = t.partition(SEP)
+    container = container.strip()
+    if not os.path.isabs(container):
+        return ""
+    return encode_archive(container, inner.strip())

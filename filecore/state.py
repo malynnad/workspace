@@ -354,21 +354,28 @@ def validate(value, home: str, source) -> str:
     if not cur:
         return fallback
 
-    # 未注册的 scheme（M2 之前的 zip+file://）直接回退，不要顺着 parent 掉进文件系统根
-    from .sources import SOURCE_REGISTRY
+    # 未注册的 scheme（M2 之前的 zip+file://）直接回退，不要顺着 parent 掉进文件系统根。
+    # M2 起 zip+ 已注册：校验必须换成对应的 FileSource，否则 LocalSource 会把压缩包内的
+    # 路径一路 parent 出去，重启后 cwd 变成「压缩包所在目录」—— 用户以为丢了位置。
+    from .sources import SOURCE_REGISTRY, UnknownScheme, resolve
     known = set(SOURCE_REGISTRY) or {getattr(source, "scheme", "file")}
     try:
-        if vpath.parse(cur)[0] not in known:
-            return fallback
+        scheme = vpath.parse(cur)[0]
     except (ValueError, TypeError):
         return fallback
+    if scheme not in known:
+        return fallback
+    try:
+        src = resolve(cur)
+    except UnknownScheme:
+        src = source
 
     root = vpath.encode_path(os.sep)
     for _ in range(64):
         if cur == root:
             break
         try:
-            if source.exists(cur) and source.is_dir(cur):
+            if src.exists(cur) and src.is_dir(cur):
                 return cur
         except Exception:
             pass

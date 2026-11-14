@@ -175,6 +175,16 @@ Item {
                 ctx.beginPath()
                 ctx.moveTo(w * 0.60, h * 0.10); ctx.lineTo(w * 0.60, h * 0.28)
                 ctx.lineTo(w * 0.78, h * 0.28); ctx.stroke()
+            } else if (root.name === "archive") {
+                // 压缩包：方盒 + 中间拉链（预览浮窗标题栏用；列表 delegate 里绝不用 Icon）
+                ctx.strokeRect(w * 0.16, h * 0.16, w * 0.68, h * 0.68)
+                ctx.beginPath()
+                ctx.moveTo(w * 0.50, h * 0.16); ctx.lineTo(w * 0.50, h * 0.84); ctx.stroke()
+                for (var zi = 0; zi < 4; ++zi) {       // 拉链齿
+                    var zy = h * (0.22 + zi * 0.14)
+                    ctx.beginPath()
+                    ctx.moveTo(w * 0.44, zy); ctx.lineTo(w * 0.56, zy); ctx.stroke()
+                }
             } else if (root.name === "gear") {
                 // 设置：外圆 + 内孔 + 8 根齿。不画实心齿块，线描风格和其他图标一致
                 var gcx = w * 0.5
