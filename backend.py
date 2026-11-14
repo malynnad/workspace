@@ -42,8 +42,16 @@ CREATE TABLE IF NOT EXISTS templates(
   seq INTEGER,
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP);
-INSERT OR IGNORE INTO log_types(name, seq) VALUES
-  ('工作', 0), ('学习', 1), ('生活', 2), ('其他', 3);
+-- 默认类型只在**表为空时**播一次种。原来是 INSERT OR IGNORE 四条，等于每次
+-- 启动都把「工作/学习/生活」补回去 —— 用户（或迁移脚本）删掉的类型活不过一次
+-- 重启。加 NOT EXISTS 之后：全新库照样四条，删过的不会被复活。
+INSERT INTO log_types(name, seq)
+SELECT name, seq FROM (
+  SELECT '工作' AS name, 0 AS seq
+  UNION ALL SELECT '学习', 1
+  UNION ALL SELECT '生活', 2
+  UNION ALL SELECT '其他', 3
+) WHERE NOT EXISTS (SELECT 1 FROM log_types);
 """
 
 

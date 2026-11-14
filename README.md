@@ -62,18 +62,59 @@ python3 -m venv .venv
 | 模块 | 状态 | 说明 |
 |------|------|------|
 | 壳（侧边栏四模块） | ✅ | QML StackLayout，主题 token 在 qml/Theme.qml |
-| 工作日志 | ✅ 骨架 | 月历选日期 + 当天条目 + 编辑器（增删改），条目类型可配 |
+| 工作日志 | ✅ | 月历选日期 + 当天条目 + 编辑器（增删改），条目类型可配；已灌入旧库真实数据（15288 条 / 732 天） |
 | 待办 | ✅ | 添加 / 完成 / 删除 / 到期日；`来自日志`徽标 = source_entry_id |
 | 日志→待办 | ✅ | 日志编辑器里「转为待办」按钮，content 取主题或正文首行 |
 | 脚本面板 | ✅ | 扫描 scripts 目录、QProcess 运行、输出回显、双击即跑 |
-| 模板回复 | 未做 | 表已建（templates），UI 阶段 1 后期加，可开关 |
+| 旧数据迁移 | ✅ | `tools/import_worklogs.py`，只读旧库 + 冷备份 + 映射表幂等 + 逐字节对账 |
+| 模板回复 | 数据 ✅ / UI 未做 | 14 条模板已从旧库迁进 `templates` 表；**界面还没做**，表里暂时只有数据 |
 | 文件管理 | ✅ M1a + M1b | 常驻收藏栏（常用位置 + 可增删收藏夹）+ 等比双面板（窗口任何宽度左右等宽）+ 响应式列宽；导航 / 四列排序 / 过滤 / 隐藏文件 / 多选 / 快捷键 / 状态持久化。M1b 预览是**独立无边框窗口**：默认占屏幕右半边（1920×1080 → 960×972），可拖四边四角缩放、可拖出主窗口、始终置顶（能浮在 Excel 等其他应用上）、拖动标题栏移动、双击复位、几何记进 state.json；空格打开、Esc/空格关闭、↑↓ 切换相邻项并同步主窗口选中项；图片按宽度铺满（竖图/长页可上下滚动）、文本按宽度折行、**PDF 按页竖排滚动**（加密 PDF 弹密码框，Enter 解锁、错密码留在框里重试，同一文件本次会话只问一次）；五种预览器（图片/PDF/文本/文件夹摘要/兜底信息卡）；**设置统一到主窗口左下角**（全应用唯一入口，分「文件浏览 / 工作时段 / 预览清晰度」三组）：显示隐藏文件（全局一份，两栏同步）、目录自动刷新开关、顶栏上下班时间（原来硬编码 12:00/18:00）、图片与 PDF 清晰度（标准 / 清晰 / 极高），改完即时生效并记住；文件列表的类型点按类型着色（目录蓝、图片紫、PDF 珊瑚红、其余浅灰），一眼看出哪些能预览。**写操作 M1c**：跟系统剪贴板双向互通（同时写 `text/uri-list` 和 `x-special/gnome-copied-files`，能和文件管理器互拷）、Ctrl+C/X/V、粘贴同名自动加序号（`报告.pdf` → `报告 (1).pdf`，从不覆盖）、F2 / Ctrl+Shift+N 行内改名（预选主干不选扩展名，Enter 提交、Esc 取消、点到别处也算提交）、Delete 移回收站（freedesktop 规范，跨分区落 `.Trash-<uid>`）、Shift+Delete 永久删除（必过确认框）、**自绘右键菜单**（样式走 Theme，不进系统；「预览」= 浮窗 + 空格，「打开」= 系统默认程序 + Ctrl+Enter）；后台分块复制、带进度、可取消；**M2 起步：目录自动刷新**（QFileSystemWatcher 只挂当前目录，350ms 防抖 + 800ms 最小间隔，设置面板里可关）。**M2 压缩包**：ZIP / TAR 家族（含 .tar.gz/.bzip2/.xz）**双击当目录逛**（`zip+file://` 走 FileSource 注册表，面板零改动），RAR / 7z 有外部程序（7z / unrar / bsdtar）时同等待遇、没有就降级成「能列不能解」并给出安装提示；裸 .gz/.bz2/.xz 单文件流式解压；右键「解压到此处 / 解压到独立文件夹 / 压缩为 ZIP」（ZIP_DEFLATED，已压过的类型直接 store），后台分块、带进度、可取消，**同名一律不覆盖**（跳过后在 Toast 里说清楚）；浮窗里给压缩包摘要（格式 / 条目数 / 解压后大小 / 是否加密 / 顶层前 12 项）。包内只读：写操作能力位全关，复制/剪切/重命名/删除在菜单里置灰。**M2 Office 预览**：docx / xlsx / pptx / odt 走 LibreOffice 无头转 PDF（设置面板「Office 版面」控制，**默认开**），产物落进 `~/.cache/workspace/office/`（缓存键 = 真实路径 + mtime + size，按 mtime 淘汰到 300MB / 120 份以内），转出来的就是一份真 PDF，**翻页 / 缩放三档 / 加密解锁全部复用 PDF 管线**（kind 报 pdf、payload 带 `sourceKind: "office"` 让标题图标仍认 Word）；关掉开关或没装 soffice 时回落纯 Python 抽文字（标准库拆 OOXML，1600 段约 30ms），`.doc` / `.wps` / `.rtf` 借 antiword / catdoc / unrtf；加密文档（OOXML 加密后是 OLE 而非 zip）、内嵌实体、转换失败都给中文提示并保住文字兜底，不会白屏。插件未做，接口已留 |
 
-## 旧数据迁移（重装麒麟后）
+## 旧数据迁移
 
-`tools/import_worklogs.py`（待写）：从旧 `work_logs.db` 只读导入
-logs/log_entries/log_types/templates，幂等可重跑，迁移后对账。旧 todos 未完成项
-转新结构并标注来源。**旧库只读、先冷备份，这是硬约束。**
+`tools/import_worklogs.py`：旧 PyQt5 版 WorkLogs 的 `work_logs.db` → 本库。**默认预演，
+只出报告不写盘**，确认后加 `--apply`。
+
+```bash
+python3 tools/import_worklogs.py --src ~/work_logs.db                # 预演
+python3 tools/import_worklogs.py --src ~/work_logs.db --apply        # 真写（先自动备份）
+python3 tools/import_worklogs.py --src ~/work_logs.db --apply --purge-new
+```
+
+**旧库只读、先冷备份，这是硬约束。** 脚本跑前跑后各算一次旧库 sha256，不一致直接中止。
+备份用 `sqlite3.Connection.backup()` 而不是 `shutil.copy` —— WAL 模式下拷主文件会拷到半截事务。
+
+schema 有三处对不上，脚本里逐条处理：
+
+| 旧 | 新 | 处理 |
+|---|---|---|
+| `todos.completed INTEGER` 0/1 | `status TEXT` `open`/`done` | 转换；旧库没有 `source_entry_id`，留 NULL（「来自日志」徽标不适用） |
+| — | `todos.source_entry_id` | 同上 |
+| `logs` 表（年度日志） | 无此表 | 转成当年 12-31 的一条 `log_entries`，标题「xxxx 年度总结」，内容一字不改。日期不规范的落到 1970-12-31 并告警 |
+| `shortcuts` 表 | 无此表 | **不迁**：新库快捷键走 QML Shortcut，旧 `action_id` 在新代码里已经对不上 |
+
+三个口径，改脚本前先读：
+
+1. **幂等靠 `_import_map(src_table, src_id) → dst_id`，不靠内容指纹**。旧库里有
+   5915 组完全重复的条目（同一天同一个人记了 4 次同样的内容），按内容去重等于替他删数据。
+2. **对账是逐字节的**：按映射表把目标行捞回来，和源行拼成同一个 sha256 比对，不一致就报错。
+3. **两道防呆**（见 `Migrator.guard()`）：新库日志数已接近源库一半但映射表是空的
+   （典型的「从旧备份还原了库」→ 重跑会翻倍）会中止，要 `--force`；这次迁的旧库 sha256
+   和之前迁过的不同（两份库的 id 未必一一对应，映射会串）也会中止，要 `--allow-different-src`。
+
+迁移脚本顺带管两件事：
+
+- **类型播种**：`log_types` 原来的 `INSERT OR IGNORE` 四条默认值是**每次启动**跑的，
+  删掉的「工作/学习/生活」活不过一次重启。已改成「只在表为空时播种」。迁移后旧库用到的
+  类型会按源库 seq 排到最前面（`补贴` 排第一，不然它排在三个空类型后面）。
+- **`--purge-new`**：清掉新库里的试用数据（日志/待办/模板 + 一条日志都没引用的
+  `工作`/`学习`/`生活`）。有引用的一律不碰，`其他` 永远保留 —— 它是旧库在用的兜底类型。
+
+**量级提醒**：真实那份旧库是 15288 条、732 天，平均 21 条/天、单日最多 86 条，类型只有
+`补贴`(14045) 和 `其他`(1243)。这是工作台账不是日记。「全部记录」是一次全表查询 + 把
+16020 个 dict 塞进 QML 的 `var` 数组，实测 Python 侧 150ms、跨语言 77ms（Mac；麒麟上约
+再乘 3）。所以 `LogPage` 只在真的切到列表模式时才拉 —— 以前 `Component.onCompleted`
+里无条件 `refreshList()`，等于每次切进日志页都白付这笔钱。
 
 ## 结构
 
@@ -113,6 +154,7 @@ workspace/
   qml/ContextMenu.qml              自绘右键菜单（普通 Item + 全屏遮罩，不用 Popup）
   qml/PreviewWindow.qml            独立无边框预览窗口（Qt.Window + Frameless + StaysOnTop，四边四角可缩放）
   qml/PlaceholderPage.qml  旧占位页（保留，不再被引用）
+  tools/import_worklogs.py 旧 WorkLogs 数据迁移（只读旧库 + 冷备份 + 幂等 + 对账）
 ```
 
 ## 验证
@@ -123,6 +165,8 @@ TMPDIR=$PWD/.tmp .venv/bin/python -m filecore.selfcheck     # 31 项全 OK（含
 FC_SELFCHECK_ITEMS=5000 TMPDIR=$PWD/.tmp .venv/bin/python -m filecore.selfcheck  # 重压测（可选）
 TMPDIR=$PWD/.tmp WORKSPACE_HOME=$PWD/.tmp/home QT_QPA_PLATFORM=offscreen \
   WS_SMOKE=1 .venv/bin/python main.py                     # 日志里不能有 QML 报错
+python3 -m py_compile tools/import_worklogs.py            # 迁移脚本语法
+python3 tools/import_worklogs.py --src <旧库> --dst <副本>   # 预演，看对账三行全 ✓
 ```
 
 注意：`WS_SMOKE` 的退出码**不能单独判活**（QML 组件加载失败时也可能返回 0），
