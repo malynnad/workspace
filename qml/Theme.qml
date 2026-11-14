@@ -22,21 +22,29 @@ QtObject {
     readonly property color image: "#67558A"         // 图片（低饱和紫，比 todo 的 #7C6BF0 暗一档）
     readonly property color pdf: "#557E8A"           // PDF（灰青，别用红系抢 danger）
     readonly property color archive: "#8A6F55"       // 压缩包（灰褐，纸箱色）
+    // 文本 / 代码：能就地预览的这两类共用一色。注意别命名为 text ——
+    // 上面的 text 是正文文字色，两者语义无关。
+    // 取色自 2026 款理想 i6「风信紫冷光漆」官方色卡（H=312°）。官方色卡中点实测
+    // #908B8F，饱和度只有 2.2% —— 那是车漆在漫射光下的样子，搬到 12px 色块上就是
+    // 纯灰、看不出紫。这里保持 312° 色相不动，把饱和度提到 18%，才是同一种紫。
+    readonly property color readable: "#A07798"
 
     readonly property int radius: 16
     readonly property int radiusSm: 10
     readonly property int pad: 20
 
-    // 文件类型点的统一配色：目录蓝、图片紫、PDF 灰青、压缩包灰褐，其余（含文本等
-    // 日常一大堆的类型）走 line 极浅灰 —— 全上色列表会花，只让需要一眼认出的跳出来。
-    // 文件列表 delegate 不许用 Icon（软渲染约束），类型识别全靠这个小色块，
-    // 所以两处（FmPanel 列表、文件夹预览）都走这里，别各写一套。
+    // 文件类型点的统一配色：目录蓝、图片紫、PDF 灰青、压缩包灰褐、文本/代码风信紫，
+    // 其余（办公/视频/音频/字体/其他）走 line 极浅灰 —— 全上色列表会花，只让需要
+    // 一眼认出的跳出来。文件列表 delegate 不许用 Icon（软渲染约束），类型识别全靠
+    // 这个小色块，所以两处（FmPanel 列表、文件夹预览）都走这里，别各写一套。
     function kindColor(kind) {
         switch (kind) {
         case "folder": return accent
         case "image": return image
         case "pdf": return pdf
         case "archive": return archive
+        case "text": return readable
+        case "code": return readable
         default: return line
         }
     }
