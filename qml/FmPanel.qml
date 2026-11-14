@@ -495,9 +495,9 @@ Item {
                             color: "transparent"
                             Text {
                                 anchors.left: parent.left
-                                anchors.leftMargin: headerCell.isName ? 18 : 0
+                                anchors.leftMargin: headerCell.isName ? 22 : 0
                                 anchors.verticalCenter: parent.verticalCenter
-                                width: parent.width - (headerCell.isName ? 18 : 0) - 4
+                                width: parent.width - (headerCell.isName ? 22 : 0) - 4
                                 // 隐藏列后 index 不再等于排序列，必须用 sortCol 映射
                                 text: modelData.label + (headerCell.sorted
                                       ? (root.panel.sortDesc ? " ↓" : " ↑") : "")
@@ -543,13 +543,30 @@ Item {
                                : (rowMouse.containsMouse ? Theme.line : "transparent")
 
                         Rectangle {
-                            x: 0; y: 10; width: 12; height: 12; radius: 3
-                            color: Theme.kindColor(model.isDir ? "folder" : model.kind)
+                            // 文件夹是方、文件是圆 —— 形状本身是一层信息，白底上比
+                            // 纯颜色更早被读到。尺寸/圆角都走 Theme，预览窗的目录
+                            // 列表是同一套，只是小一号。
+                            readonly property bool isFolder: model.isDir
+                            readonly property string tint: Theme.kindColor(isFolder ? "folder"
+                                                                                  : model.kind)
+                            readonly property bool hollow: Theme.kindHollow(isFolder ? "folder"
+                                                                                    : model.kind)
+                            x: 0
+                            anchors.verticalCenter: parent.verticalCenter
+                            width: isFolder ? Theme.kindBox : Theme.kindBox - 4
+                            height: width
+                            radius: Theme.kindRadius(isFolder ? "folder" : "file", width)
+                            // 不开抗锯齿的话 13px 的圆在软渲染下是锯齿多边形（像齿轮）。
+                            // 只影响这一小块，代价可以忽略。
+                            antialiasing: true
+                            color: hollow ? "transparent" : tint
+                            border.width: hollow ? 1 : 0
+                            border.color: hollow ? Theme.textMuted : "transparent"
                         }
                         Text {
                             visible: root.renamingVpath !== model.vpath
-                            x: 18; y: 0
-                            width: Math.max(0, root.wOf("name") - 18)
+                            x: 22; y: 0
+                            width: Math.max(0, root.wOf("name") - 22)
                             height: root.rowH
                             verticalAlignment: Text.AlignVCenter
                             text: model.name
@@ -563,8 +580,8 @@ Item {
                         // 软渲染约束里只禁 Layout/Canvas/动画/Icon，TextInput 可以用；
                         // 只在正在改名的那一行创建（visible 绑定），平时零开销。
                         Rectangle {
-                            x: 14
-                            width: Math.max(80, root.wOf("name") - 14)
+                            x: 22
+                            width: Math.max(80, root.wOf("name") - 22)
                             height: 24
                             anchors.verticalCenter: parent.verticalCenter
                             radius: 6

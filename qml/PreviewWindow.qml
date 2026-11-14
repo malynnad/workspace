@@ -988,13 +988,25 @@ Window {
                                     width: parent.width
                                     height: 26
                                     Rectangle {
-                                        x: 2; y: 10; width: 8; height: 8; radius: 2
-                                        color: Theme.kindColor(modelData.isDir ? "folder"
-                                                                              : modelData.kind)
+                                        // 与文件列表同一套：文件夹方、文件圆，小一号
+                                        readonly property bool isFolder: modelData.isDir
+                                        readonly property string tint:
+                                            Theme.kindColor(isFolder ? "folder" : modelData.kind)
+                                        readonly property bool hollow:
+                                            Theme.kindHollow(isFolder ? "folder" : modelData.kind)
+                                        x: 2
+                                        anchors.verticalCenter: parent.verticalCenter
+                                        width: isFolder ? Theme.kindBoxSm : Theme.kindBoxSm - 4
+                                        height: width
+                                        radius: Theme.kindRadius(isFolder ? "folder" : "file", width)
+                                        antialiasing: true
+                                        color: hollow ? "transparent" : tint
+                                        border.width: hollow ? 1 : 0
+                                        border.color: hollow ? Theme.textMuted : "transparent"
                                     }
                                     Text {
-                                        x: 18; y: 0
-                                        width: Math.max(0, parent.width - 90)
+                                        x: 20; y: 0
+                                        width: Math.max(0, parent.width - 92)
                                         height: 26
                                         verticalAlignment: Text.AlignVCenter
                                         text: modelData.name
